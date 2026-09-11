@@ -23,7 +23,6 @@ export const INDICATOR_CATALOG: {
       { id: "keyTimes", name: "Key time levels", blurb: "8:30 / 9:30 / 10:00 opens, extended." },
       { id: "killzones", name: "ICT killzones", blurb: "Asia / London / NY AM / NY PM windows." },
       { id: "openPrice", name: "Opening price", blurb: "Midnight and RTH 09:30 opens." },
-      { id: "quarterly", name: "Quarterly theory", blurb: "Q1–Q4 of the 18:00→18:00 day." },
     ],
   },
   {
@@ -44,6 +43,7 @@ export const INDICATOR_CATALOG: {
       { id: "volume", name: "Volume", blurb: "Per-bar volume histogram." },
       { id: "vrvp", name: "Visible range profile", blurb: "Volume profile over the visible range, with POC." },
       { id: "hvn", name: "High volume nodes", blurb: "HVN price levels — peaks of the profile." },
+      { id: "pvp", name: "Periodic volume profile", blurb: "A volume profile per period (every 4H), anchored at each open." },
     ],
   },
   {
@@ -54,12 +54,19 @@ export const INDICATOR_CATALOG: {
     ],
   },
   {
+    group: "ICT",
+    items: [
+      { id: "quarterly", name: "Quarterly theory", blurb: "Q1–Q4 of the 18:00→18:00 day." },
+      { id: "stopHunt", name: "Stop hunt", blurb: "Wick past a pivot, close back inside." },
+      { id: "smt", name: "SMT divergence", blurb: "Cross-market divergence vs the compared instrument." },
+    ],
+  },
+  {
     group: "Price action",
     items: [
       { id: "fvg", name: "Fair value gap", blurb: "3-candle imbalances, tracked until filled." },
       { id: "pivots", name: "Pivots", blurb: "Swing pivot highs and lows." },
       { id: "eqHL", name: "Equal highs / lows", blurb: "Paired equals within tolerance." },
-      { id: "stopHunt", name: "Stop hunt", blurb: "Wick past a pivot, close back inside." },
     ],
   },
 ];
@@ -72,11 +79,11 @@ export type Killzone = {
 };
 
 export const KILLZONES: Killzone[] = [
-  { label: "Asia", startMin: 20 * 60, endMin: 24 * 60, color: "rgba(90,110,90,0.14)" },
-  { label: "Asia", startMin: 0, endMin: 2 * 60, color: "rgba(90,110,90,0.14)" },
-  { label: "London", startMin: 2 * 60, endMin: 5 * 60, color: "rgba(28,27,24,0.06)" },
-  { label: "NY AM", startMin: 7 * 60, endMin: 10 * 60, color: "rgba(196,165,116,0.22)" },
-  { label: "NY PM", startMin: 13 * 60 + 30, endMin: 16 * 60, color: "rgba(90,110,130,0.12)" },
+  { label: "Asia", startMin: 20 * 60, endMin: 24 * 60, color: "rgba(90,110,90,0.18)" },
+  { label: "Asia", startMin: 0, endMin: 2 * 60, color: "rgba(90,110,90,0.18)" },
+  { label: "London", startMin: 2 * 60, endMin: 5 * 60, color: "rgba(70,90,80,0.16)" },
+  { label: "NY AM", startMin: 7 * 60, endMin: 10 * 60, color: "rgba(196,165,116,0.28)" },
+  { label: "NY PM", startMin: 13 * 60 + 30, endMin: 16 * 60, color: "rgba(90,110,130,0.16)" },
 ];
 
 export type HtfCandle = {
@@ -99,6 +106,8 @@ export type FvgBox = {
 
 export type Pivot = { time: number; price: number; kind: "h" | "l" };
 
+export type SmtMark = { time: number; price: number; kind: "bear" | "bull" };
+
 export type ChartModel = {
   vwap: number[];
   ema9: number[];
@@ -113,6 +122,7 @@ export type ChartModel = {
   pivots: Pivot[];
   equals: { a: number; b: number; price: number; kind: "h" | "l" }[];
   stopHunts: { time: number; price: number; kind: "h" | "l" }[];
+  smt: SmtMark[];
   profile: { price: number; volume: number }[];
   poc: number;
   keyOpens: { minutes: number; price: number; label: string }[];
@@ -120,7 +130,12 @@ export type ChartModel = {
   rthOpen: number | null;
 };
 
-export function buildChartModel(bars: Bar[], session: SessionDay | null, tick: number): ChartModel {
+export function buildChartModel(
+  bars: Bar[],
+  session: SessionDay | null,
+  tick: number,
+  compare?: Bar[],
+): ChartModel {
   const closes = bars.map((b) => b.close);
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
@@ -166,6 +181,7 @@ export function buildChartModel(bars: Bar[], session: SessionDay | null, tick: n
     pivots,
     equals,
     stopHunts,
+    smt: compare?.length ? findSmt(bars, compare) : [],
     profile: profile.rows,
     poc: session?.poc ?? profile.poc,
     keyOpens,
@@ -328,7 +344,42 @@ function findKeyOpens(bars: Bar[]) {
   return out;
 }
 
+function findSmt(primary: Bar[], compare: Bar[]): SmtMark[] {
+  const a = findPivots(primary, 3);
+  const b = findPivots(compare, 3);
+  const out: SmtMark[] = [];
+  function lastTwo(list: Pivot[], kind: "h" | "l") {
+    const xs = list.filter((p) => p.kind === kind);
+    if (xs.length < 2) return null;
+    return [xs[xs.length - 2]!, xs[xs.length - 1]!] as const;
+  }
+  const aH = lastTwo(a, "h");
+  const bH = lastTwo(b, "h");
+  if (aH && bH) {
+    if (aH[1].price > aH[0].price && bH[1].price < bH[0].price) {
+      out.push({ time: aH[1].time, price: aH[1].price, kind: "bear" });
+    }
+    if (aH[1].price < aH[0].price && bH[1].price > bH[0].price) {
+      out.push({ time: aH[1].time, price: aH[1].price, kind: "bull" });
+    }
+  }
+  const aL = lastTwo(a, "l");
+  const bL = lastTwo(b, "l");
+  if (aL && bL) {
+    if (aL[1].price < aL[0].price && bL[1].price > bL[0].price) {
+      out.push({ time: aL[1].time, price: aL[1].price, kind: "bull" });
+    }
+    if (aL[1].price > aL[0].price && bL[1].price < bL[0].price) {
+      out.push({ time: aL[1].time, price: aL[1].price, kind: "bear" });
+    }
+  }
+  return out;
+}
+
 export function rthStartIndex(bars: Bar[]): number {
-  const i = bars.findIndex((b) => nyParts(b.time).minutes >= 9 * 60 + 30);
-  return Math.max(0, i);
+  const i = bars.findIndex((b) => {
+    const m = nyParts(b.time).minutes;
+    return m >= 9 * 60 + 30 && m < 16 * 60;
+  });
+  return i < 0 ? Math.max(0, bars.length - 1) : i;
 }

@@ -107,23 +107,28 @@ export function useTapeHistory(id: string) {
 }
 
 export function useReplayTape(id: string) {
-  const m5 = useChart(id, "5m", "1mo", 60_000);
+  const recent = useChart(id, "5m", "5d", 60_000);
+  const month = useChart(id, "5m", "1mo", 60_000);
   const m1 = useChart(id, "1m", "5d", 60_000);
-  const sessions = useMemo(
-    () => (m5.chart ? sessionsFromIntraday(id, m5.chart.bars) : []),
-    [m5.chart, id],
-  );
-  const dates = useMemo(() => {
-    if (sessions.length) return sessions.map((s) => s.date);
-    return [];
-  }, [sessions]);
+  const sessions = useMemo(() => {
+    const dense = recent.chart ? sessionsFromIntraday(id, recent.chart.bars) : [];
+    const wide = month.chart ? sessionsFromIntraday(id, month.chart.bars) : [];
+    if (!wide.length) return dense;
+    const seen = new Set(dense.map((s) => s.date));
+    return [...dense, ...wide.filter((s) => !seen.has(s.date))];
+  }, [recent.chart, month.chart, id]);
+  const dates = useMemo(() => sessions.map((s) => s.date), [sessions]);
 
   function barsFor(date: string, tf: number): Bar[] {
     const day1 = m1.chart ? barsOnDate(m1.chart.bars, date, id) : [];
-    const day5 = m5.chart ? barsOnDate(m5.chart.bars, date, id) : [];
+    const dayRecent = recent.chart ? barsOnDate(recent.chart.bars, date, id) : [];
+    const dayMonth = month.chart ? barsOnDate(month.chart.bars, date, id) : [];
+    const day5 = dayRecent.length >= dayMonth.length ? dayRecent : dayMonth;
     if (tf <= 1 && day1.length >= 12) return day1;
     if (tf <= 5 && day1.length >= 20) return resampleBars(day1, tf);
     if (day5.length >= 8) return resampleBars(day5, Math.max(tf, 5));
+    const stillLoading = recent.loading || month.loading || m1.loading;
+    if (stillLoading && !recent.chart && !month.chart && !m1.chart) return [];
     const sim = generateMinuteBars(id, date);
     return aggregateBars(sim, Math.max(1, tf));
   }
@@ -132,14 +137,17 @@ export function useReplayTape(id: string) {
     return sessions.find((s) => s.date === date) ?? (date ? getSession(id, date, 5) : null);
   }
 
+  const live = recent.live || month.live || m1.live;
+  const loading = !live && (recent.loading || month.loading || m1.loading);
+
   return {
     sessions,
     dates,
     barsFor,
     sessionFor,
-    live: m5.live || m1.live,
-    error: m5.error && !m1.live ? m5.error : null,
-    loading: m5.loading && m1.loading,
+    live,
+    error: recent.error && month.error && !m1.live ? recent.error : null,
+    loading,
   };
 }
 

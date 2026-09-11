@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Pause, Play, SkipForward, StepForward, SlidersHorizontal, Bookmark } from "lucide-react";
+import { Pause, Play, SkipForward, StepForward, SlidersHorizontal, Bookmark, PanelRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CandleChart, levelLines } from "@/components/candle-chart";
 import { DrawToolbar } from "@/components/draw-toolbar";
@@ -14,13 +14,13 @@ import { Input, NativeSelect } from "@/components/ui/input";
 import { CHART } from "@/lib/chart-theme";
 import { DRAW_COLORS, type DrawTool } from "@/lib/drawings";
 import { fmtPx, fmtTimeNy } from "@/lib/format";
-import { listTradingDays } from "@/lib/market/calendar";
 import { setupsFromPlaybook } from "@/lib/market/evaluate";
 import { getSession } from "@/lib/market/generate";
-import { nyParts } from "@/lib/market/session";
+import { rthStartIndex } from "@/lib/market/indicators";
+import { barsOnDate, nyParts } from "@/lib/market/session";
 import { getSymbol } from "@/lib/market/symbols";
 import { PROP_CHALLENGES } from "@/lib/market/seed";
-import { evaluateLive, useReplayTape } from "@/lib/market/use-feed";
+import { evaluateLive, useChart, useReplayTape } from "@/lib/market/use-feed";
 import { useOrb, EMPTY_DRAWINGS } from "@/lib/store";
 import type { Playbook, ReplayMode, Trade } from "@/lib/market/types";
 import { cn } from "@/lib/utils";
@@ -53,12 +53,13 @@ function ReplayPage() {
 }
 
 function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: string }) {
-  const fallbackDates = useMemo(() => listTradingDays(40), []);
   const playbooks = useOrb((s) => s.playbooks);
   const [symbol, setSymbol] = useState("NQ");
   const tape = useReplayTape(symbol);
-  const dates = tape.dates.length ? tape.dates : fallbackDates;
-  const [date, setDate] = useState(dates[0] ?? "");
+  const compareId = symbol === "NQ" ? "ES" : "NQ";
+  const compare = useChart(compareId, "5m", "5d", 60_000);
+  const dates = tape.dates;
+  const [date, setDate] = useState("");
   const [tf, setTf] = useState(5);
   const [idx, setIdx] = useState(40);
   const [playing, setPlaying] = useState(false);
@@ -69,10 +70,12 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
   const [tool, setTool] = useState<DrawTool>("select");
   const [color, setColor] = useState<string>(DRAW_COLORS[0]!);
   const [showInd, setShowInd] = useState(false);
+  const [showTicket, setShowTicket] = useState(false);
   const [pbId, setPbId] = useState(playbookId ?? playbooks[0]?.id ?? "");
   const [evalNotice, setEvalNotice] = useState<string | null>(null);
   const [evalBusy, setEvalBusy] = useState(false);
   const [marks, setMarks] = useState<number[]>([]);
+  const [goTo, setGoTo] = useState("");
 
   const spec = getSymbol(symbol);
   const indicators = useOrb((s) => s.indicators);
@@ -92,10 +95,11 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
     if (date && tape.sessionFor) return tape.sessionFor(date);
     return date ? getSession(symbol, date, tf) : null;
   }, [tape, date, symbol, tf]);
-  const rthStart = useMemo(() => {
-    const i = bars.findIndex((b) => nyParts(b.time).minutes >= 9 * 60 + 30);
-    return i < 0 ? Math.min(12, Math.max(2, bars.length - 1)) : i;
-  }, [bars]);
+  const rthStart = useMemo(() => rthStartIndex(bars), [bars]);
+  const compareDay = useMemo(() => {
+    if (!date || !compare.chart) return [];
+    return barsOnDate(compare.chart.bars, date, compareId);
+  }, [compare.chart, date, compareId]);
 
   const visible = bars.slice(0, Math.max(2, Math.min(idx, bars.length)));
   const last = visible[visible.length - 1];
@@ -123,9 +127,11 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
   }, [playbook, session, symbol]);
 
   useEffect(() => {
-    setIdx(Math.max(8, rthStart));
+    if (!bars.length) return;
+    const start = rthStart > 8 ? rthStart : bars.length;
+    setIdx(Math.max(8, start));
     setPlaying(false);
-  }, [symbol, date, tf, rthStart]);
+  }, [symbol, date, tf, rthStart, bars.length]);
 
   useEffect(() => {
     if (!playing) return;
@@ -224,17 +230,19 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
   ];
 
   return (
-    <div className="flex h-[calc(100dvh-7rem)] flex-col overflow-hidden lg:h-dvh">
+    <div className="flex h-[calc(100dvh-3.5rem-5rem)] flex-col overflow-hidden lg:h-dvh">
       {showInd ? (
         <IndicatorPanel active={indicators} onToggle={toggleIndicator} onClose={() => setShowInd(false)} />
       ) : null}
 
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-bg-elevated px-3 py-1.5">
         <Link to="/app/replay" className="text-[11px] uppercase tracking-[0.14em] text-subtle hover:text-fg">
           Sessions
         </Link>
         <Badge tone={mode === "eval" ? "warn" : "muted"}>{mode === "eval" ? "Evaluation" : "Free play"}</Badge>
-        <Badge tone={tape.live ? "long" : "muted"}>{tape.live ? "Live history" : tape.loading ? "Loading tape" : "Model"}</Badge>
+        <Badge tone={tape.live ? "long" : "muted"}>
+          {tape.live ? "Live history" : tape.loading ? "Loading tape" : "Model"}
+        </Badge>
         <SymbolSelect value={symbol} onChange={setSymbol} />
         <NativeSelect value={date} onChange={(e) => setDate(e.target.value)} className="max-w-[11rem]">
           {dates.map((d) => (
@@ -254,6 +262,31 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
         <Button size="sm" variant="ghost" onClick={() => setShowInd(true)}>
           <SlidersHorizontal /> Indicators
         </Button>
+        <Button size="sm" variant="ghost" onClick={() => setIdx(bars.length)}>
+          To latest
+        </Button>
+        <form
+          className="hidden items-center gap-1 sm:flex"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const m = goTo.trim().match(/^(\d{1,2}):?(\d{2})$/);
+            if (!m) return;
+            const minutes = Number(m[1]) * 60 + Number(m[2]);
+            const i = bars.findIndex((b) => nyParts(b.time).minutes >= minutes);
+            if (i >= 0) {
+              setPlaying(false);
+              setIdx(i + 1);
+            }
+          }}
+        >
+          <Input
+            value={goTo}
+            onChange={(e) => setGoTo(e.target.value)}
+            placeholder="Go to 09:30"
+            className="h-8 w-28"
+            aria-label="Go to time"
+          />
+        </form>
         {playbook ? (
           <Button size="sm" variant="secondary" disabled={evalBusy} onClick={() => void runEvaluate(playbook)}>
             {evalBusy ? "Evaluating…" : "Evaluate playbook"}
@@ -262,6 +295,9 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
         <span className="ml-auto font-mono text-sm tabular-nums">
           {last ? fmtPx(last.close, spec.digits) : "—"}
         </span>
+        <Button size="sm" variant={showTicket ? "secondary" : "ghost"} onClick={() => setShowTicket((v) => !v)}>
+          <PanelRight /> Trade
+        </Button>
       </div>
 
       {evalNotice ? (
@@ -277,7 +313,7 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <DrawToolbar
           vertical
           tool={tool}
@@ -287,7 +323,15 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
           onClear={() => setDrawings(drawKey, [])}
           count={drawings.length}
         />
-        <div className="relative min-h-0 min-w-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1" style={{ background: CHART.bg }}>
+          {tape.loading && visible.length < 8 ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center">
+              <div className="text-center">
+                <div className="font-display text-2xl text-fg">Loading live tape</div>
+                <p className="mt-2 text-sm text-muted">Pulling Yahoo Globex history for {spec.label}…</p>
+              </div>
+            </div>
+          ) : null}
           <CandleChart
             bars={visible}
             indicators={indicators}
@@ -297,103 +341,123 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
             drawings={drawings}
             tool={tool}
             color={color}
+            compareBars={compareDay}
+            onBarClick={(i) => {
+              setPlaying(false);
+              setIdx(i + 1);
+            }}
             onDrawingsChange={(next) => setDrawings(drawKey, next)}
             watermark={`${tf === 60 ? "1H" : tf === 240 ? "4H" : `${tf}m`}`}
             className="absolute inset-0 h-full w-full"
           />
+          <div className="pointer-events-none absolute bottom-8 left-3 flex flex-wrap gap-1">
+            {indicators
+              .filter((id) => id !== "volume")
+              .slice(0, 6)
+              .map((id) => (
+                <span
+                  key={id}
+                  className="rounded-full bg-bg/70 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-fg"
+                >
+                  {id}
+                </span>
+              ))}
+          </div>
         </div>
 
-        <aside className="hidden w-72 shrink-0 space-y-3 overflow-y-auto border-l border-border p-3 lg:block">
-          {mode === "eval" ? (
-            <Panel className="p-4">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-subtle">Evaluation rules</div>
-              <div className="mt-2 font-mono text-lg">
-                <PnlText value={evalPnl} />
-              </div>
-              <p className="mt-1 text-xs text-muted">
-                Target {challenge.profitTarget} · daily −{challenge.dailyDrawdown} · max DD {challenge.maxDrawdown}
-              </p>
-              {breached ? <p className="mt-2 text-xs text-short">Rule breached — session locked.</p> : null}
-            </Panel>
-          ) : null}
-
-          <Panel className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-sm">{spec.label}</span>
-              <Badge tone={sessionPnl >= 0 ? "long" : "short"}>session</Badge>
-            </div>
-            <div className="mt-2 font-mono text-2xl tabular-nums">
-              {last ? fmtPx(last.close, spec.digits) : "—"}
-            </div>
-            <div className="mt-1 text-xs text-muted">
-              OR {session?.orbBreak ?? "—"} · IB {session?.ibBreak ?? "—"}
-            </div>
-            <div className="mt-3">
-              <Stat label="Replay P&L" value={<PnlText value={sessionPnl} />} />
-            </div>
-          </Panel>
-
-          {playbook ? (
-            <Panel className="p-4">
-              <h2 className="text-sm font-medium">{playbook.name}</h2>
-              <p className="mt-1 text-xs leading-relaxed text-muted">{playbook.thesis}</p>
-              <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs text-fg">
-                {playbook.rules.slice(0, 4).map((r) => (
-                  <li key={r}>{r}</li>
-                ))}
-              </ol>
-              {playbook.evaluation ? (
-                <p className="mt-2 text-xs text-muted">
-                  Last eval {Math.round(playbook.evaluation.winRate * 100)}% WR · {playbook.evaluation.trades} fills
+        {showTicket ? (
+          <aside className="absolute inset-y-0 right-0 z-20 w-72 space-y-3 overflow-y-auto border-l border-border bg-bg-elevated p-3 shadow-soft lg:static lg:z-0">
+            {mode === "eval" ? (
+              <Panel className="p-4">
+                <div className="text-[11px] uppercase tracking-[0.14em] text-subtle">Evaluation rules</div>
+                <div className="mt-2 font-mono text-lg">
+                  <PnlText value={evalPnl} />
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  Target {challenge.profitTarget} · daily −{challenge.dailyDrawdown} · max DD {challenge.maxDrawdown}
                 </p>
-              ) : null}
-            </Panel>
-          ) : null}
+                {breached ? <p className="mt-2 text-xs text-short">Rule breached — session locked.</p> : null}
+              </Panel>
+            ) : null}
 
-          <Panel className="p-4">
-            <h2 className="text-sm font-medium">Ticket</h2>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <label className="text-[11px] text-subtle">
-                Qty
-                <Input
-                  type="number"
-                  min={1}
-                  value={qty}
-                  onChange={(e) => setQty(Number(e.target.value) || 1)}
-                  className="mt-1 h-9"
-                />
-              </label>
-              <label className="text-[11px] text-subtle">
-                Stop
-                <Input
-                  type="number"
-                  min={1}
-                  value={stopTicks}
-                  onChange={(e) => setStopTicks(Number(e.target.value) || 1)}
-                  className="mt-1 h-9"
-                />
-              </label>
-              <label className="text-[11px] text-subtle">
-                Target
-                <Input
-                  type="number"
-                  min={1}
-                  value={targetTicks}
-                  onChange={(e) => setTargetTicks(Number(e.target.value) || 1)}
-                  className="mt-1 h-9"
-                />
-              </label>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <Button variant="long" disabled={breached} onClick={() => place("long")}>
-                Buy
-              </Button>
-              <Button variant="short" disabled={breached} onClick={() => place("short")}>
-                Sell
-              </Button>
-            </div>
-          </Panel>
-        </aside>
+            <Panel className="p-4">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-sm">{spec.label}</span>
+                <Badge tone={sessionPnl >= 0 ? "long" : "short"}>session</Badge>
+              </div>
+              <div className="mt-2 font-mono text-2xl tabular-nums">
+                {last ? fmtPx(last.close, spec.digits) : "—"}
+              </div>
+              <div className="mt-1 text-xs text-muted">
+                OR {session?.orbBreak ?? "—"} · IB {session?.ibBreak ?? "—"}
+              </div>
+              <div className="mt-3">
+                <Stat label="Replay P&L" value={<PnlText value={sessionPnl} />} />
+              </div>
+            </Panel>
+
+            {playbook ? (
+              <Panel className="p-4">
+                <h2 className="text-sm font-medium">{playbook.name}</h2>
+                <p className="mt-1 text-xs leading-relaxed text-muted">{playbook.thesis}</p>
+                <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs text-fg">
+                  {playbook.rules.slice(0, 4).map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ol>
+                {playbook.evaluation ? (
+                  <p className="mt-2 text-xs text-muted">
+                    Last eval {Math.round(playbook.evaluation.winRate * 100)}% WR · {playbook.evaluation.trades} fills
+                  </p>
+                ) : null}
+              </Panel>
+            ) : null}
+
+            <Panel className="p-4">
+              <h2 className="text-sm font-medium">Ticket</h2>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <label className="text-[11px] text-subtle">
+                  Qty
+                  <Input
+                    type="number"
+                    min={1}
+                    value={qty}
+                    onChange={(e) => setQty(Number(e.target.value) || 1)}
+                    className="mt-1 h-9"
+                  />
+                </label>
+                <label className="text-[11px] text-subtle">
+                  Stop
+                  <Input
+                    type="number"
+                    min={1}
+                    value={stopTicks}
+                    onChange={(e) => setStopTicks(Number(e.target.value) || 1)}
+                    className="mt-1 h-9"
+                  />
+                </label>
+                <label className="text-[11px] text-subtle">
+                  Target
+                  <Input
+                    type="number"
+                    min={1}
+                    value={targetTicks}
+                    onChange={(e) => setTargetTicks(Number(e.target.value) || 1)}
+                    className="mt-1 h-9"
+                  />
+                </label>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button variant="long" disabled={breached} onClick={() => place("long")}>
+                  Buy
+                </Button>
+                <Button variant="short" disabled={breached} onClick={() => place("short")}>
+                  Sell
+                </Button>
+              </div>
+            </Panel>
+          </aside>
+        ) : null}
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border bg-bg-elevated px-3 py-1.5">
@@ -411,6 +475,13 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
           </button>
         ))}
         <div className="mx-2 h-4 w-px bg-border" />
+        <Button
+          size="sm"
+          variant={tool === "select" ? "secondary" : "ghost"}
+          onClick={() => setTool("select")}
+        >
+          Select bar
+        </Button>
         <Button
           size="sm"
           variant={playing ? "secondary" : "default"}
@@ -453,7 +524,7 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
           type="range"
           min={8}
           max={Math.max(9, bars.length)}
-          value={idx}
+          value={Math.min(idx, Math.max(9, bars.length))}
           onChange={(e) => {
             setPlaying(false);
             setIdx(Number(e.target.value));
@@ -482,3 +553,4 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
 function unrealized(t: Trade, px: number, pointValue: number) {
   return (t.side === "long" ? px - t.entry : t.entry - px) * t.qty * pointValue;
 }
+

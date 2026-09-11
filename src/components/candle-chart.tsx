@@ -59,6 +59,8 @@ export function CandleChart({
   color = DRAW_COLORS[0],
   onDrawingsChange,
   watermark,
+  compareBars,
+  onBarClick,
   className,
 }: {
   bars: Bar[];
@@ -72,6 +74,8 @@ export function CandleChart({
   color?: string;
   onDrawingsChange?: (next: Drawing[]) => void;
   watermark?: string;
+  compareBars?: Bar[];
+  onBarClick?: (index: number) => void;
   className?: string;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -90,7 +94,10 @@ export function CandleChart({
   }, [indicators, overlays]);
   const tick = getSymbol(session?.symbol ?? "ES").tick;
   const visible = useMemo(() => (bars.length > 520 ? bars.slice(-520) : bars), [bars]);
-  const model = useMemo(() => buildChartModel(visible, session, tick), [visible, session, tick]);
+  const model = useMemo(
+    () => buildChartModel(visible, session, tick, compareBars),
+    [visible, session, tick, compareBars],
+  );
 
   const argsRef = useRef({ visible, ids, lines, markers, drawings, draft, model, session, watermark });
   argsRef.current = { visible, ids, lines, markers, drawings, draft, model, session, watermark };
@@ -159,9 +166,17 @@ export function CandleChart({
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!onDrawingsChange || tool === "select") return;
     const pt = pointFromEvent(e);
     if (!pt) return;
+    if (tool === "select" && onBarClick) {
+      const geom = geomRef.current;
+      if (geom) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        onBarClick(Math.max(0, Math.min(visible.length - 1, geom.indexAt(e.clientX - rect.left))));
+      }
+      return;
+    }
+    if (!onDrawingsChange || tool === "select") return;
     if (tool === "erase") {
       const hit = hitDrawing(drawings, pt, geomRef.current, visible);
       if (hit) onDrawingsChange(drawings.filter((d) => d.id !== hit));
@@ -446,6 +461,25 @@ function paint(
       ctx.strokeRect(xAt(i) - 6, yAt(s.price) - 6, 12, 12);
     }
   }
+  if (ids.includes("smt")) {
+    for (const s of model.smt) {
+      const i = nearest(bars, s.time);
+      const x = xAt(i);
+      const y = yAt(s.price);
+      ctx.strokeStyle = s.kind === "bear" ? CHART.down : CHART.up;
+      ctx.fillStyle = s.kind === "bear" ? CHART.fvgDown : CHART.fvgUp;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - 7, y + (s.kind === "bear" ? 10 : -10));
+      ctx.lineTo(x + 7, y + (s.kind === "bear" ? 10 : -10));
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = CHART.textStrong;
+      ctx.font = "9px 'IBM Plex Sans', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("SMT", x + 8, y);
+    }
+  }
 
   if (volH > 0) {
     const maxVol = Math.max(...bars.map((b) => b.volume), 1);
@@ -547,12 +581,28 @@ function paint(
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.font = "10px 'IBM Plex Mono', ui-monospace, monospace";
-  const first = bars[0]!;
-  const last = bars[bars.length - 1]!;
-  ctx.fillText(clock(first.time), padL, h - 6);
-  ctx.textAlign = "right";
-  ctx.fillText(clock(last.time), w - padR, h - 6);
+  let lastHour = -1;
+  const minGap = 52;
+  let lastLabelX = -999;
+  for (let i = 0; i < bars.length; i++) {
+    const p = nyParts(bars[i]!.time);
+    const hour = Math.floor(p.minutes / 60);
+    if (hour === lastHour) continue;
+    lastHour = hour;
+    const x = xAt(i);
+    if (x - lastLabelX < minGap) continue;
+    lastLabelX = x;
+    ctx.strokeStyle = "rgba(28,27,24,0.08)";
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    ctx.fillStyle = CHART.text;
+    ctx.textAlign = "center";
+    ctx.fillText(`${String(hour).padStart(2, "0")}:00`, x, h - 6);
+  }
 
+  const last = bars[bars.length - 1]!;
   const ly = yAt(last.close);
   ctx.fillStyle = CHART.lastTag;
   ctx.fillRect(w - padR + 1, ly - 9, padR - 2, 18);
@@ -575,8 +625,16 @@ function paintBands(ctx: CanvasRenderingContext2D, bars: Bar[], geom: Geom, ids:
       if (!inside && start >= 0) {
         const x1 = geom.xAt(start) - 2;
         const x2 = geom.xAt(i - 1) + 2;
+        const w = Math.max(4, x2 - x1);
         ctx.fillStyle = kz.color;
-        ctx.fillRect(x1, geom.padT, Math.max(4, x2 - x1), geom.plotH);
+        ctx.fillRect(x1, geom.padT, w, geom.plotH);
+        if (w > 56) {
+          ctx.fillStyle = "rgba(28,27,24,0.45)";
+          ctx.font = "10px 'IBM Plex Sans', sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(`${kz.label} KZ`, x1 + w / 2, geom.padT + 6);
+        }
         start = -1;
       }
     }
@@ -623,7 +681,7 @@ function paintHtf(
     const y1 = geom.yAt(Math.max(c.open, c.close));
     const y2 = geom.yAt(Math.min(c.open, c.close));
     ctx.fillRect(x1, y1, Math.max(4, x2 - x1), Math.max(2, y2 - y1));
-    ctx.globalAlpha = 0.45;
+    ctx.globalAlpha = 0.7;
     ctx.strokeRect(x1, geom.yAt(c.high), Math.max(4, x2 - x1), Math.max(2, geom.yAt(c.low) - geom.yAt(c.high)));
     ctx.globalAlpha = 1;
   }

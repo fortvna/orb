@@ -60,6 +60,15 @@ export function IndicatorPanel({
               </div>
             </section>
           ))}
+          <section>
+            <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-subtle">My scripts</h3>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="flex min-h-[7rem] flex-col items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted">
+                <span className="text-lg leading-none">+</span>
+                <span className="mt-2">New indicator</span>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>

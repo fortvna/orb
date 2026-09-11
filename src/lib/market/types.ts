@@ -204,12 +204,14 @@ export type IndicatorId =
   | "rsi"
   | "vrvp"
   | "hvn"
+  | "pvp"
   | "htf"
   | "po3"
   | "quarterly"
   | "stopHunt"
   | "eqHL"
   | "fvg"
-  | "pivots";
+  | "pivots"
+  | "smt";
 
 export type ReplayMode = "free" | "eval";

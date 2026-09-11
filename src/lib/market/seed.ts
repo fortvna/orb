@@ -136,6 +136,32 @@ export const PLAYBOOKS: Playbook[] = [
     status: "draft",
     origin: "desk",
   },
+  {
+    id: "pb-530",
+    name: "5:30 NQ range",
+    setup: "Open range",
+    kind: "orb",
+    symbol: "NQ",
+    timeframe: "5m",
+    windowStart: 5 * 60 + 45,
+    windowEnd: 8 * 60,
+    targetR: 1,
+    stopTicks: null,
+    validated: true,
+    mentorNotes: "From Metis / Edgeful 5:30 range notes. First break after the 05:30–05:45 container.",
+    thesis:
+      "The 05:30 ET range is the London-into-NY container. Trade the first single-side break and hold for 1× the range.",
+    rules: [
+      "Map 05:30–05:45 high/low before any order.",
+      "First break only. Skip a double break.",
+      "Stop beyond the far side of the 15-minute range.",
+      "Target 1.0× range. Stand down into 08:30 if still open.",
+    ],
+    invalidation: "Both sides trade through before 06:30, or a news print inside the window.",
+    session: "London / NY AM",
+    status: "validated",
+    origin: "imported",
+  },
 ];
 
 export const PROP_CHALLENGES: PropChallenge[] = [
