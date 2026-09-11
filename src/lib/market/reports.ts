@@ -1,6 +1,16 @@
 import { getSessions } from "./generate";
 import { listTradingDays } from "./calendar";
-import type { BreakKind, ReportId, SessionDay } from "./types";
+import { nyParts } from "./session";
+import { computePerformance } from "./stats";
+import type {
+  BreakKind,
+  CustomReport,
+  Playbook,
+  PlaybookEvaluation,
+  ReportId,
+  SessionDay,
+  Trade,
+} from "./types";
 
 export type SliceStat = {
   label: string;
@@ -9,7 +19,7 @@ export type SliceStat = {
 };
 
 export type ReportView = {
-  id: ReportId;
+  id: string;
   title: string;
   kicker: string;
   summary: string;
@@ -17,11 +27,12 @@ export type ReportView = {
   distribution: { label: string; value: number; tone: "long" | "short" | "muted" | "warn" }[];
   byWeekday: SliceStat[];
   extras: { label: string; value: string }[];
+  source: "session" | "playbook" | "custom";
 };
 
 const REPORT_META: Record<ReportId, { title: string; kicker: string }> = {
   gap: { title: "Gap fill", kicker: "Does the overnight gap get filled?" },
-  orb: { title: "Opening range breakout", kicker: "First 15 minutes, then the expansion." },
+  orb: { title: "Opening range", kicker: "First 15 minutes, then the expansion." },
   ib: { title: "Initial balance", kicker: "First hour high/low — the day's container." },
   occ: { title: "Opening candle continuation", kicker: "Does the first hour's direction stick?" },
   adr: { title: "Average daily range", kicker: "How far does price typically travel?" },
@@ -62,13 +73,20 @@ function breakCounts(days: SessionDay[], key: "orbBreak" | "ibBreak") {
   };
 }
 
+export function sessionsFor(symbolId: string, lookback = 60, liveSessions?: SessionDay[]): SessionDay[] {
+  const dates = listTradingDays(lookback + 1).slice(1);
+  return liveSessions && liveSessions.length > 4
+    ? liveSessions.slice(0, lookback)
+    : getSessions(symbolId, dates, 5);
+}
+
 export function buildReport(
   symbolId: string,
   report: ReportId,
   lookback = 60,
+  liveSessions?: SessionDay[],
 ): ReportView {
-  const dates = listTradingDays(lookback + 1).slice(1);
-  const days = getSessions(symbolId, dates, 5);
+  const days = sessionsFor(symbolId, lookback, liveSessions);
   const meta = REPORT_META[report];
 
   if (report === "gap") {
@@ -80,6 +98,7 @@ export function buildReport(
       id: report,
       title: meta.title,
       kicker: meta.kicker,
+      source: "session",
       summary: `Gaps fill on ${Math.round(fillRate * 100)}% of sessions. Down gaps fill more often than up gaps — fade-the-open still needs a tight invalidation.`,
       headline: [
         { label: "Fill rate", value: `${Math.round(fillRate * 100)}%`, hint: `${days.length} sessions` },
@@ -105,14 +124,8 @@ export function buildReport(
       ],
       byWeekday: byWeekday(days, (d) => d.gapFilled),
       extras: [
-        {
-          label: "Median fill time",
-          value: "first 48 min",
-        },
-        {
-          label: "Best fade",
-          value: "Tue / Wed down gaps",
-        },
+        { label: "Sample", value: `${days.length} sessions` },
+        { label: "Best fade", value: "Tue / Wed down gaps" },
       ],
     };
   }
@@ -124,12 +137,13 @@ export function buildReport(
       id: report,
       title: meta.title,
       kicker: meta.kicker,
+      source: "session",
       summary: `Single-side breakouts dominate. Double breaks print ${Math.round(c.both * 100)}% of the time — those days are usually chop; stand down or fade the second break.`,
       headline: [
         { label: "Break up only", value: `${Math.round(c.up * 100)}%`, hint: "long continuation" },
         { label: "Break down only", value: `${Math.round(c.down * 100)}%`, hint: "short continuation" },
         { label: "Double break", value: `${Math.round(c.both * 100)}%`, hint: "avoid" },
-        { label: "Avg extension", value: `${ext.toFixed(2)}×`, hint: "of ORB size" },
+        { label: "Avg extension", value: `${ext.toFixed(2)}×`, hint: "of opening range" },
       ],
       distribution: [
         { label: "Up", value: c.up, tone: "long" },
@@ -153,6 +167,7 @@ export function buildReport(
       id: report,
       title: meta.title,
       kicker: meta.kicker,
+      source: "session",
       summary: `The first hour still frames the day. First break is up ${Math.round(firstUp * 100)}% of the time. Double breaks are the trap — IB by rejection is the tell.`,
       headline: [
         { label: "Break up only", value: `${Math.round(c.up * 100)}%`, hint: "IB high taken" },
@@ -182,6 +197,7 @@ export function buildReport(
       id: report,
       title: meta.title,
       kicker: meta.kicker,
+      source: "session",
       summary: `When the first hour closes in a direction, the rest of the session follows ${Math.round(r * 100)}% of the time. Strongest as a filter on top of IB, not a standalone trigger.`,
       headline: [
         { label: "Continuation", value: `${Math.round(r * 100)}%`, hint: "first hour holds" },
@@ -211,20 +227,20 @@ export function buildReport(
 
   if (report === "inside") {
     const paired = days.slice(0, -1).map((d, i) => ({ d, y: days[i + 1]! }));
-    const insides = paired.filter(
-      (p) => p.d.open <= p.y.high && p.d.open >= p.y.low,
-    );
+    const insides = paired.filter((p) => p.d.open <= p.y.high && p.d.open >= p.y.low);
     const reachHigh = rate(insides.map((p) => p.d.high >= p.y.high));
     const reachLow = rate(insides.map((p) => p.d.low <= p.y.low));
+    const base = paired.length || 1;
     return {
       id: report,
       title: meta.title,
       kicker: meta.kicker,
-      summary: `Opens inside yesterday's range ${Math.round((insides.length / paired.length) * 100)}% of the time. Yesterday's high and low become the magnet — fade the first touch less often than you think.`,
+      source: "session",
+      summary: `Opens inside yesterday's range ${Math.round((insides.length / base) * 100)}% of the time. Yesterday's high and low become the magnet — fade the first touch less often than you think.`,
       headline: [
         {
           label: "Inside opens",
-          value: `${Math.round((insides.length / paired.length) * 100)}%`,
+          value: `${Math.round((insides.length / base) * 100)}%`,
           hint: `${insides.length} days`,
         },
         { label: "Reach y-high", value: `${Math.round(reachHigh * 100)}%`, hint: "same session" },
@@ -252,8 +268,7 @@ export function buildReport(
 
   if (report === "power") {
     const lastHour = days.map((d) => {
-      const cut = d.bars[0] ? d.bars[0].time + 5.5 * 3600 : 0;
-      const hour = d.bars.filter((b) => b.time >= cut);
+      const hour = d.bars.filter((b) => nyParts(b.time).minutes >= 15 * 60);
       const start = hour[0]?.open ?? d.close;
       const end = hour[hour.length - 1]?.close ?? d.close;
       return { d, up: end >= start, follow: (end - start) * (d.close - d.open) > 0 };
@@ -264,6 +279,7 @@ export function buildReport(
       id: report,
       title: meta.title,
       kicker: meta.kicker,
+      source: "session",
       summary: `The last hour agrees with the day's direction ${Math.round(follow * 100)}% of the time. Trend days tend to finish. Range days mean-revert into the close — size down into 15:00.`,
       headline: [
         { label: "Close-hour up", value: `${Math.round(up * 100)}%`, hint: "15:00–16:00" },
@@ -289,17 +305,20 @@ export function buildReport(
   const ranges = days.map((d) => d.range);
   const adrs = mean(ranges);
   const used = days.map((d) => d.range / Math.max(adrs, 1e-9));
-  const usedNow = used.filter((x) => x >= 1).length / days.length;
+  const usedNow = used.filter((x) => x >= 1).length / Math.max(days.length, 1);
   return {
     id: report,
     title: meta.title,
     kicker: meta.kicker,
+    source: "session",
     summary: `Average session range is the yardstick. Once ${Math.round(usedNow * 100)}% of days have already spent a full ADR, late breakouts pay less — take profits into exhaustion, not new risk.`,
     headline: [
       { label: "ADR", value: adrs.toFixed(getDigits(days)), hint: `${lookback}d mean range` },
       {
         label: "Median",
-        value: [...ranges].sort((a, b) => a - b)[Math.floor(ranges.length / 2)]?.toFixed(getDigits(days)) ?? "—",
+        value:
+          [...ranges].sort((a, b) => a - b)[Math.floor(ranges.length / 2)]?.toFixed(getDigits(days)) ??
+          "—",
         hint: "session range",
       },
       { label: "Days ≥ ADR", value: `${Math.round(usedNow * 100)}%`, hint: "exhaustion filter" },
@@ -317,9 +336,102 @@ export function buildReport(
     byWeekday: byWeekday(days, (d) => d.range >= adrs),
     extras: [
       { label: "Use", value: "size / target filter" },
-      { label: "Pair with", value: "ORB extension" },
+      { label: "Pair with", value: "opening-range extension" },
     ],
   };
+}
+
+export function buildPlaybookReport(playbook: Playbook, evaluation?: PlaybookEvaluation): ReportView {
+  const trades = evaluation?.trades ?? [];
+  const perf = computePerformance(trades);
+  const wr = perf.winRate;
+  return {
+    id: `pb:${playbook.id}`,
+    title: playbook.name,
+    kicker: `${playbook.symbol} · ${playbook.kind.toUpperCase()} · replay evaluation`,
+    source: "playbook",
+    summary: playbook.evaluation
+      ? `${playbook.name} was run across ${playbook.evaluation.sessions} sessions. ${playbook.evaluation.trades} fills, ${Math.round(playbook.evaluation.winRate * 100)}% win, expectancy ${playbook.evaluation.expectancy >= 0 ? "+" : ""}${Math.round(playbook.evaluation.expectancy)}.`
+      : `${playbook.name} has not been evaluated yet. Open Replay, load this playbook, and run Evaluate — the report is generated from those fills.`,
+    headline: [
+      { label: "Win rate", value: `${Math.round(wr * 100)}%`, hint: `${perf.trades} fills` },
+      { label: "Expectancy", value: `${perf.expectancy >= 0 ? "+" : ""}${Math.round(perf.expectancy)}`, hint: "per fill" },
+      { label: "Profit factor", value: perf.profitFactor.toFixed(2), hint: "gross win / loss" },
+      { label: "Net", value: `${Math.round(perf.net)}`, hint: playbook.symbol },
+    ],
+    distribution: [
+      { label: "Wins", value: wr, tone: "long" },
+      { label: "Losses", value: 1 - wr, tone: "short" },
+    ],
+    byWeekday: [1, 2, 3, 4, 5].map((wd) => {
+      const names = ["", "Mon", "Tue", "Wed", "Thu", "Fri"];
+      const slice = trades.filter((t) => new Date(`${t.date}T12:00:00Z`).getUTCDay() === wd);
+      const wins = slice.filter((t) => t.pnl > 0);
+      return { label: names[wd] ?? "", n: slice.length, rate: slice.length ? wins.length / slice.length : 0 };
+    }),
+    extras: [
+      { label: "Kind", value: playbook.kind },
+      { label: "Window", value: `${fmtMin(playbook.windowStart)}–${fmtMin(playbook.windowEnd)} ET` },
+      { label: "Target", value: `${playbook.targetR}R` },
+      { label: "Validated", value: playbook.validated ? "yes" : "pending mentor" },
+    ],
+  };
+}
+
+export function buildCustomReport(
+  report: CustomReport,
+  playbooks: Playbook[],
+  evaluations: PlaybookEvaluation[],
+  replayTrades: Trade[],
+): ReportView {
+  const pb = playbooks.find((p) => p.id === report.playbookId);
+  const ev = evaluations.find((e) => e.playbookId === report.playbookId);
+  const trades =
+    report.source === "replay"
+      ? replayTrades.filter((t) => t.source === "replay")
+      : ev?.trades ?? replayTrades.filter((t) => t.playbookId === report.playbookId);
+  const perf = computePerformance(trades);
+  const metric =
+    report.metric === "winRate"
+      ? `${Math.round(perf.winRate * 100)}%`
+      : report.metric === "expectancy"
+        ? `${Math.round(perf.expectancy)}`
+        : report.metric === "net"
+          ? `${Math.round(perf.net)}`
+          : `${perf.trades}`;
+  return {
+    id: report.id,
+    title: report.name,
+    kicker: report.blurb || "User-defined report",
+    source: "custom",
+    summary: `${report.name} is counted from ${report.source === "replay" ? "manual replay fills" : pb ? pb.name + " evaluations" : "the journal"}. ${perf.trades} trades in sample.`,
+    headline: [
+      { label: report.metric, value: metric, hint: `${perf.trades} fills` },
+      { label: "Win rate", value: `${Math.round(perf.winRate * 100)}%`, hint: `${perf.wins}W / ${perf.losses}L` },
+      { label: "Net", value: `${Math.round(perf.net)}`, hint: "evaluated + replay" },
+      { label: "Avg R", value: perf.avgR.toFixed(2), hint: "per fill" },
+    ],
+    distribution: [
+      { label: "Wins", value: perf.winRate, tone: "long" },
+      { label: "Losses", value: 1 - perf.winRate, tone: "short" },
+    ],
+    byWeekday: [1, 2, 3, 4, 5].map((wd) => {
+      const names = ["", "Mon", "Tue", "Wed", "Thu", "Fri"];
+      const slice = trades.filter((t) => new Date(`${t.date}T12:00:00Z`).getUTCDay() === wd);
+      const wins = slice.filter((t) => t.pnl > 0);
+      return { label: names[wd] ?? "", n: slice.length, rate: slice.length ? wins.length / slice.length : 0 };
+    }),
+    extras: [
+      { label: "Source", value: report.source },
+      { label: "Playbook", value: pb?.name ?? "—" },
+    ],
+  };
+}
+
+function fmtMin(m: number): string {
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
 }
 
 function getDigits(days: SessionDay[]): number {

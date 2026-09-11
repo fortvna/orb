@@ -34,6 +34,8 @@ export type SymbolSpec = {
   pTrend: number;
   pBreakout: number;
   pReversal: number;
+  yahoo: string;
+  tv: string;
 };
 
 export type SessionDay = {
@@ -69,7 +71,7 @@ export type SessionDay = {
 
 export type TradeSide = "long" | "short";
 
-export type TradeSource = "journal" | "replay" | "prop";
+export type TradeSource = "journal" | "replay" | "prop" | "evaluated";
 
 export type Trade = {
   id: string;
@@ -94,6 +96,23 @@ export type Trade = {
   open: boolean;
 };
 
+export type PlaybookKind = "orb" | "ib" | "gap" | "vwap" | "fvg" | "custom";
+
+export type PlaybookStatus = "draft" | "active" | "paused" | "validated";
+
+export type PlaybookEvalSummary = {
+  at: number;
+  symbol: string;
+  sessions: number;
+  trades: number;
+  wins: number;
+  winRate: number;
+  expectancy: number;
+  profitFactor: number;
+  net: number;
+  avgR: number;
+};
+
 export type Playbook = {
   id: string;
   name: string;
@@ -102,7 +121,27 @@ export type Playbook = {
   rules: string[];
   invalidation: string;
   session: string;
-  status: "active" | "paused";
+  status: PlaybookStatus;
+  origin?: "desk" | "imported" | "custom" | "mentor";
+  kind: PlaybookKind;
+  symbol: string;
+  timeframe: "1m" | "5m" | "15m";
+  windowStart: number;
+  windowEnd: number;
+  targetR: number;
+  stopTicks: number | null;
+  validated: boolean;
+  mentorNotes: string;
+  evaluation?: PlaybookEvalSummary;
+};
+
+export type PlaybookEvaluation = {
+  id: string;
+  playbookId: string;
+  at: number;
+  symbol: string;
+  summary: PlaybookEvalSummary;
+  trades: Trade[];
 };
 
 export type PropChallenge = {
@@ -116,11 +155,61 @@ export type PropChallenge = {
   minDays: number;
 };
 
-export type ReportId =
-  | "gap"
-  | "orb"
-  | "ib"
-  | "occ"
-  | "adr"
-  | "inside"
-  | "power";
+export type ReportId = "gap" | "orb" | "ib" | "occ" | "adr" | "inside" | "power";
+
+export type CustomReport = {
+  id: string;
+  name: string;
+  blurb: string;
+  source: "playbook" | "session" | "replay";
+  playbookId: string | null;
+  metric: "winRate" | "expectancy" | "net" | "fillRate" | "breakRate";
+};
+
+export type Quote = {
+  id: string;
+  last: number;
+  prevClose: number;
+  change: number;
+  changePct: number;
+  high: number;
+  low: number;
+  volume: number;
+  spark: number[];
+  asOf: number;
+};
+
+export type FeedInterval = "1m" | "5m" | "15m" | "60m" | "1d";
+export type FeedRange = "1d" | "5d" | "1mo" | "3mo" | "6mo" | "1y";
+
+export type ChartFeed = {
+  id: string;
+  interval: string;
+  bars: Bar[];
+  last: number;
+  prevClose: number;
+  changePct: number;
+  asOf: number;
+};
+
+export type IndicatorId =
+  | "volume"
+  | "sessionHL"
+  | "keyTimes"
+  | "killzones"
+  | "openPrice"
+  | "vwap"
+  | "stdev"
+  | "ema"
+  | "rsi"
+  | "vrvp"
+  | "hvn"
+  | "htf"
+  | "po3"
+  | "quarterly"
+  | "stopHunt"
+  | "eqHL"
+  | "fvg"
+  | "pivots";
+
+export type ReplayMode = "free" | "eval";

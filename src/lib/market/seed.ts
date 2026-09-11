@@ -2,14 +2,25 @@ import { hash32, mulberry32 } from "./rng";
 import { getSession } from "./generate";
 import { getSymbol } from "./symbols";
 import { listTradingDays } from "./calendar";
-import type { Playbook, PropChallenge, Trade } from "./types";
+import { evaluatePlaybook } from "./evaluate";
+import type { Playbook, PlaybookEvaluation, PropChallenge, Trade } from "./types";
 
 export const PLAYBOOKS: Playbook[] = [
   {
-    id: "pb-orb",
-    name: "ORB continuation",
-    setup: "ORB",
-    thesis: "After the first 15 minutes, trade the first single-side break and hold for 0.8–1.2× the opening range.",
+    id: "pb-or",
+    name: "Opening range continuation",
+    setup: "Open range",
+    kind: "orb",
+    symbol: "NQ",
+    timeframe: "5m",
+    windowStart: 9 * 60 + 45,
+    windowEnd: 11 * 60,
+    targetR: 1,
+    stopTicks: null,
+    validated: true,
+    mentorNotes: "Desk default. First single-side break of 09:30–09:45.",
+    thesis:
+      "After the first 15 minutes, trade the first single-side break and hold for 0.8–1.2× the opening range.",
     rules: [
       "Map 9:30–9:45 high/low before any order.",
       "Only take the first break. Skip if both sides trade through.",
@@ -18,13 +29,24 @@ export const PLAYBOOKS: Playbook[] = [
     ],
     invalidation: "Double break within 30 minutes, or a news print inside the first hour.",
     session: "NY RTH",
-    status: "active",
+    status: "validated",
+    origin: "desk",
   },
   {
     id: "pb-ib",
-    name: "IB extension",
+    name: "LONNY-IB",
     setup: "IB",
-    thesis: "The first hour is the container. Trade the first break of IB high/low in the direction of opening candle continuation.",
+    kind: "ib",
+    symbol: "NQ",
+    timeframe: "5m",
+    windowStart: 10 * 60 + 30,
+    windowEnd: 12 * 60,
+    targetR: 1,
+    stopTicks: null,
+    validated: true,
+    mentorNotes: "Fortvna primary sleeve. First IB break with opening-candle continuation.",
+    thesis:
+      "The first hour is the container. Trade the first break of IB high/low in the direction of opening candle continuation.",
     rules: [
       "Wait for 10:30. No anticipation.",
       "First break only, with OCC agreement.",
@@ -33,13 +55,24 @@ export const PLAYBOOKS: Playbook[] = [
     ],
     invalidation: "IB double break or first break that immediately re-enters and holds.",
     session: "NY RTH",
-    status: "active",
+    status: "validated",
+    origin: "desk",
   },
   {
     id: "pb-gap",
     name: "Gap fill fade",
     setup: "Gap",
-    thesis: "Unfilled overnight gaps are magnets. Fade stretched opens back toward prior close when fill-rate is historically high.",
+    kind: "gap",
+    symbol: "ES",
+    timeframe: "5m",
+    windowStart: 9 * 60 + 30,
+    windowEnd: 10 * 60 + 30,
+    targetR: 1,
+    stopTicks: null,
+    validated: true,
+    mentorNotes: "Fade stretched opens back toward prior close.",
+    thesis:
+      "Unfilled overnight gaps are magnets. Fade stretched opens back toward prior close when fill-rate is historically high.",
     rules: [
       "Gap ≥ 0.25× ADR.",
       "Wait for the first 5-minute failure (wick through then close back).",
@@ -49,12 +82,23 @@ export const PLAYBOOKS: Playbook[] = [
     invalidation: "Acceptance beyond the gap extreme for two consecutive 5-minute closes.",
     session: "NY open",
     status: "active",
+    origin: "desk",
   },
   {
     id: "pb-vwap",
     name: "VWAP reclaim",
     setup: "VWAP",
-    thesis: "After a morning sweep, a reclaim of session VWAP with delta confirmation is a continuation long/short for the rest of the day.",
+    kind: "vwap",
+    symbol: "ES",
+    timeframe: "5m",
+    windowStart: 10 * 60 + 30,
+    windowEnd: 14 * 60,
+    targetR: 1.2,
+    stopTicks: null,
+    validated: false,
+    mentorNotes: "Paused until a mentor pass confirms delta filter.",
+    thesis:
+      "After a morning sweep, a reclaim of session VWAP with delta confirmation is a continuation long/short for the rest of the day.",
     rules: [
       "Sweep of IB extreme first.",
       "Reclaim VWAP on a 5-minute close.",
@@ -64,6 +108,33 @@ export const PLAYBOOKS: Playbook[] = [
     invalidation: "Immediate loss of VWAP with expanding opposing delta.",
     session: "NY midday",
     status: "paused",
+    origin: "desk",
+  },
+  {
+    id: "pb-fvg",
+    name: "NYAM FVG invert",
+    setup: "FVG",
+    kind: "fvg",
+    symbol: "NQ",
+    timeframe: "5m",
+    windowStart: 9 * 60 + 30,
+    windowEnd: 11 * 60,
+    targetR: 1,
+    stopTicks: null,
+    validated: false,
+    mentorNotes: "Entry polish, not a standalone bias. Validate in replay before activating.",
+    thesis:
+      "First displacement fair-value gap of the cash open. Enter on the 50% fill, stop beyond the origin wick.",
+    rules: [
+      "Only the first FVG after 09:30.",
+      "Enter on a 50% fill of the gap.",
+      "Stop: far side of the 3-candle pattern.",
+      "Target 1R. Do not stack with ORB on the same print.",
+    ],
+    invalidation: "Third candle closes through the gap (impulsive continuation — skip the retrace).",
+    session: "NY AM",
+    status: "draft",
+    origin: "desk",
   },
 ];
 
@@ -100,13 +171,25 @@ export const PROP_CHALLENGES: PropChallenge[] = [
   },
 ];
 
-const SETUPS = ["ORB", "IB", "Gap", "VWAP", "FVG"] as const;
+const SETUPS = [
+  { setup: "Open range", id: "pb-or" },
+  { setup: "IB", id: "pb-ib" },
+  { setup: "Gap", id: "pb-gap" },
+  { setup: "VWAP", id: "pb-vwap" },
+  { setup: "FVG", id: "pb-fvg" },
+] as const;
+
+function decideSide(setup: string, session: ReturnType<typeof getSession>, rng: () => number): "long" | "short" {
+  if (setup === "Open range") return session.orbBreak === "down" ? "short" : "long";
+  if (setup === "IB") return session.ibFirstBreak === "down" ? "short" : "long";
+  if (setup === "Gap") return session.gap > 0 ? "short" : "long";
+  return rng() < 0.5 ? "long" : "short";
+}
 
 export function buildSeedTrades(): Trade[] {
   const days = listTradingDays(52).slice(1);
   const symbols = ["ES", "NQ", "CL", "GC", "NVDA", "BTCUSD"];
   const trades: Trade[] = [];
-  let n = 0;
 
   for (const date of days) {
     for (const symbolId of symbols) {
@@ -114,12 +197,17 @@ export function buildSeedTrades(): Trade[] {
       if (rng() > 0.18) continue;
       const spec = getSymbol(symbolId);
       const session = getSession(symbolId, date, 5);
-      const setup = SETUPS[Math.floor(rng() * SETUPS.length)]!;
-      const side = decideSide(setup, session, rng);
-      const entryBar = session.bars[8 + Math.floor(rng() * 18)] ?? session.bars[5];
+      const pick = SETUPS[Math.floor(rng() * SETUPS.length)]!;
+      const side = decideSide(pick.setup, session, rng);
+      const rth = session.bars.filter((b) => {
+        const t = new Date(b.time * 1000);
+        const h = t.getUTCHours();
+        return h >= 13 && h < 21;
+      });
+      const book = rth.length > 20 ? rth : session.bars;
+      const entryBar = book[8 + Math.floor(rng() * 18)] ?? book[5];
       const exitBar =
-        session.bars[30 + Math.floor(rng() * Math.max(1, session.bars.length - 32))] ??
-        session.bars[session.bars.length - 1];
+        book[30 + Math.floor(rng() * Math.max(1, book.length - 32))] ?? book[book.length - 1];
       if (!entryBar || !exitBar) continue;
 
       const stopDist = Math.max(session.orb.size * (0.55 + rng() * 0.4), spec.tick * 8);
@@ -140,32 +228,11 @@ export function buildSeedTrades(): Trade[] {
       }
 
       const riskUsd = 180 + rng() * 520;
-      const qtyRaw = riskUsd / (stopDist * spec.pointValue);
-      const qty =
-        spec.kind === "stocks"
-          ? Math.max(10, Math.round(qtyRaw / 10) * 10)
-          : spec.kind === "crypto"
-            ? Math.max(0.01, Math.round(qtyRaw * 100) / 100)
-            : Math.max(1, Math.round(qtyRaw));
+      const qty = Math.max(1, Math.round(riskUsd / Math.max(stopDist * spec.pointValue, 1)));
+      const pnl = (side === "long" ? exit - entry : entry - exit) * qty * spec.pointValue;
 
-      const pnlGross =
-        (side === "long" ? exit - entry : entry - exit) * qty * spec.pointValue;
-      const fees = spec.kind === "futures" ? qty * 4.08 : Math.max(0.8, Math.abs(pnlGross) * 0.0008);
-      const pnl = pnlGross - fees;
-      const playbookId =
-        setup === "ORB"
-          ? "pb-orb"
-          : setup === "IB"
-            ? "pb-ib"
-            : setup === "Gap"
-              ? "pb-gap"
-              : setup === "VWAP"
-                ? "pb-vwap"
-                : null;
-
-      n += 1;
       trades.push({
-        id: `t-${n.toString().padStart(3, "0")}`,
+        id: `sd-${symbolId}-${date}-${entryBar.time}`,
         symbol: symbolId,
         side,
         qty,
@@ -174,15 +241,15 @@ export function buildSeedTrades(): Trade[] {
         entryTime: entryBar.time,
         exitTime: exitBar.time,
         stop,
-        target: side === "long" ? entry + stopDist : entry - stopDist,
+        target: side === "long" ? entry + stopDist * 1.2 : entry - stopDist * 1.2,
         pnl,
-        fees,
+        fees: spec.kind === "futures" ? qty * 4.08 : 1,
         rMultiple,
-        setup,
-        tags: [setup, session.orbBreak === "both" ? "chop" : "clean", side],
-        notes: noteFor(setup, side, winner, session.date),
+        setup: pick.setup,
+        tags: [pick.setup.toLowerCase()],
+        notes: "",
         source: "journal",
-        playbookId,
+        playbookId: pick.id,
         date,
         open: false,
       });
@@ -192,26 +259,9 @@ export function buildSeedTrades(): Trade[] {
   return trades.sort((a, b) => b.entryTime - a.entryTime);
 }
 
-function decideSide(
-  setup: string,
-  session: ReturnType<typeof getSession>,
-  rng: () => number,
-): "long" | "short" {
-  if (setup === "Gap") return session.gap > 0 ? "short" : "long";
-  if (setup === "ORB") {
-    if (session.orbBreak === "up") return "long";
-    if (session.orbBreak === "down") return "short";
-  }
-  if (setup === "IB") {
-    if (session.ibFirstBreak === "up") return "long";
-    if (session.ibFirstBreak === "down") return "short";
-  }
-  return rng() < 0.5 ? "long" : "short";
-}
-
-function noteFor(setup: string, side: string, winner: boolean, date: string): string {
-  if (winner) {
-    return `${date} ${setup} ${side}: held through the first pullback. Size was right; left a runner on the table.`;
-  }
-  return `${date} ${setup} ${side}: early. Should have waited for acceptance instead of the first tick through.`;
+export function buildSeedEvaluations(playbooks: Playbook[]): PlaybookEvaluation[] {
+  return playbooks
+    .filter((p) => p.status !== "paused")
+    .slice(0, 3)
+    .map((p) => evaluatePlaybook(p, 28));
 }

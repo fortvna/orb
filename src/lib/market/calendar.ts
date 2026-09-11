@@ -52,6 +52,11 @@ export function sessionOpenUnix(date: string): number {
   return Math.floor(Date.UTC(y!, m! - 1, d!, 9 + offset, 30, 0) / 1000);
 }
 
+/** 18:00 ET the previous calendar day — Globex open for this session date. */
+export function globexOpenUnix(date: string): number {
+  return sessionOpenUnix(date) - (15 * 60 + 30) * 60;
+}
+
 function isEasternDaylight(y: number, m: number, d: number): boolean {
   const march = nthWeekdayOfMonth(y, 3, 0, 2);
   const nov = nthWeekdayOfMonth(y, 11, 0, 1);
@@ -79,46 +84,28 @@ export const ECON_EVENTS: EconEvent[] = [
   {
     date: "2026-09-11",
     time: "08:30",
-    title: "PPI MoM",
+    title: "PPI",
     impact: "high",
-    actual: "0.2%",
-    forecast: "0.3%",
+    actual: "0.3%",
+    forecast: "0.2%",
     prior: "0.4%",
   },
   {
-    date: "2026-09-11",
-    time: "10:00",
-    title: "U. of Mich. Sentiment",
-    impact: "med",
-    actual: "71.4",
-    forecast:  "70.8",
-    prior: "69.9",
-  },
-  {
-    date: "2026-09-12",
-    time: "08:30",
-    title: "Retail Sales MoM",
-    impact: "high",
-    actual: "—",
-    forecast: "0.4%",
-    prior: "0.5%",
-  },
-  {
-    date: "2026-09-17",
-    time: "14:00",
-    title: "FOMC Rate Decision",
-    impact: "high",
-    actual: "—",
-    forecast: "4.25%",
-    prior: "4.50%",
-  },
-  {
     date: "2026-09-10",
+    time: "10:00",
+    title: "Wholesale Inventories",
+    impact: "low",
+    actual: "0.1%",
+    forecast: "0.1%",
+    prior: "0.0%",
+  },
+  {
+    date: "2026-09-09",
     time: "08:30",
-    title: "Initial Jobless Claims",
+    title: "JOLTS",
     impact: "med",
-    actual: "228k",
-    forecast: "235k",
-    prior: "231k",
+    actual: "7.18M",
+    forecast: "7.20M",
+    prior: "7.40M",
   },
 ];

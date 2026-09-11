@@ -14,7 +14,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Orb is the trading desk for replay, statistical reports, journaling, and orderflow — in one product.",
+          "Orb is a live trading desk: charts, drawings, playbooks, replay, and a journal — in one product.",
       },
       { name: "theme-color", content: "#08090b" },
     ],

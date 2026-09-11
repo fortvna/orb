@@ -1,28 +1,27 @@
 # Orb
 
-The trading desk for **replay**, **statistical reports**, **journaling**, and **orderflow charts** — in one product.
+The trading desk for **live charts**, **replay**, **statistical reports**, **journaling**, and **imported playbooks** — in one product.
 
-Orb combines the jobs of market-replay tools, edge reports (opening range, initial balance, gap fill), a trade journal with analytics, and a levels/orderflow chart.
+Orb is a name, not an opening-range strategy. It combines a Nami-style replay tape (killzones, HTF candles, PO3, drawings), TradingView, a live Yahoo feed, session reports, and a trade journal.
 
-Simulated market data. Not a broker. Not financial advice.
+Live market data. Not a broker. Not financial advice.
+
+## The chain
+
+**Mentor** writes and validates a playbook → **Replay** evaluates it on live historical tape → **Reports** are generated from those fills → **Analytics** rolls the reports up.
 
 ## Modules
 
-- **Desk** — what's in play: watchlist, ORB/IB/gap status, calendar
-- **Replay** — bar-by-bar session playback with a paper ticket
-- **Charts** — VWAP, EMA, volume profile, cumulative delta, ORB/IB levels
-- **Reports** — historical base rates by symbol, weekday, lookback
-- **Journal** — tagged fills, notes, manual entry
-- **Analytics** — equity, time of day, weekday, setup P&L, calendar
-- **Playbooks** — written rules tied to fill stats
+- **Desk** — live watchlist, change, spark, session levels
+- **Charts** — Orb tape (VWAP, killzones, HTF, PO3, drawings) plus TradingView
+- **Replay** — bar-by-bar playback of real Yahoo sessions, playbooks loaded, evaluation simulator
+- **Reports** — session base rates plus playbook evals and user-defined reports
+- **Journal** — calendar with stats
+- **Analytics** — generated from reports and playbooks
+- **Playbooks** — import JSON / CSV / Markdown, evaluate on live tape
 - **Prop** — challenge rule board against the journal
-- **Mentor** — leaks from the book, plus an optional AI read
+- **Mentor** — draft, validate, then evaluate
 
 ## Stack
 
-React, TanStack Start, Tailwind, Zustand, lightweight-charts, Recharts.
-
-```bash
-npm install
-npm run dev
-```
+React, TanStack Start, Tailwind, Zustand, Recharts. Live feed via Yahoo Finance (server). Charts via canvas tape + TradingView widget.

@@ -14,29 +14,32 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Logo } from "@/components/brand/logo";
+import { LiveDot } from "@/components/live-dot";
 import { Button } from "@/components/ui/button";
+import { useQuotes } from "@/lib/market/use-feed";
 import { useOrb } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/app", label: "Desk", icon: LayoutDashboard, hint: "What's in play" },
-  { to: "/app/replay", label: "Replay", icon: PlayCircle, hint: "Session playback" },
-  { to: "/app/charts", label: "Charts", icon: CandlestickChart, hint: "Orderflow & tools" },
+  { to: "/app/replay", label: "Replay", icon: PlayCircle, hint: "Backtest / eval" },
+  { to: "/app/charts", label: "Charts", icon: CandlestickChart, hint: "Live tape & drawings" },
   { to: "/app/reports", label: "Reports", icon: Table2, hint: "Historical edge" },
-  { to: "/app/journal", label: "Journal", icon: BookMarked, hint: "Fills & notes" },
-  { to: "/app/analytics", label: "Analytics", icon: Activity, hint: "Performance" },
-  { to: "/app/playbooks", label: "Playbooks", icon: Library, hint: "Rules that pay" },
+  { to: "/app/journal", label: "Journal", icon: BookMarked, hint: "Calendar" },
+  { to: "/app/analytics", label: "Analytics", icon: Activity, hint: "From reports" },
+  { to: "/app/playbooks", label: "Playbooks", icon: Library, hint: "Rules to measure" },
   { to: "/app/prop", label: "Prop", icon: ShieldCheck, hint: "Challenge sim" },
   { to: "/app/mentor", label: "Mentor", icon: MessagesSquare, hint: "Ask the desk" },
 ] as const;
 
-const MOBILE = ["/app", "/app/replay", "/app/reports", "/app/journal"] as const;
+const MOBILE = ["/app", "/app/replay", "/app/charts", "/app/journal"] as const;
 
 export function AppShell() {
   const [open, setOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hydrate = useOrb((s) => s.hydrate);
-  const ready = useOrb((s) => s.ready);
+  const watchlist = useOrb((s) => s.watchlist);
+  const { live } = useQuotes(watchlist.slice(0, 6), 20000);
 
   useEffect(() => {
     void useOrb.persist.rehydrate();
@@ -62,7 +65,9 @@ export function AppShell() {
         </nav>
         <div className="border-t border-border px-4 py-4">
           <div className="text-[11px] uppercase tracking-[0.14em] text-subtle">Desk</div>
-          <div className="mt-1 font-mono text-xs text-muted">NY session · simulated</div>
+          <div className="mt-2">
+            <LiveDot live={live} label={live ? "NY session · live" : "Connecting feed"} />
+          </div>
         </div>
       </aside>
 
@@ -70,9 +75,12 @@ export function AppShell() {
         <Link to="/" className="flex items-center">
           <Logo />
         </Link>
-        <Button variant="ghost" size="icon" aria-label="Menu" onClick={() => setOpen(true)}>
-          <Menu />
-        </Button>
+        <div className="flex items-center gap-2">
+          <LiveDot live={live} />
+          <Button variant="ghost" size="icon" aria-label="Menu" onClick={() => setOpen(true)}>
+            <Menu />
+          </Button>
+        </div>
       </header>
 
       {open ? (
@@ -100,13 +108,7 @@ export function AppShell() {
 
       <div className="min-w-0 lg:pl-56">
         <main className="min-h-dvh min-w-0 overflow-x-hidden pb-20 lg:pb-0">
-          {ready ? (
-            <Outlet />
-          ) : (
-            <div className="flex min-h-[60vh] items-center justify-center text-sm text-muted">
-              Loading desk…
-            </div>
-          )}
+          <Outlet />
         </main>
       </div>
 

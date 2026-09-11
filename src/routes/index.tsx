@@ -1,12 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowRight, Play } from "lucide-react";
 import { Logo } from "@/components/brand/logo";
+import { LiveDot } from "@/components/live-dot";
 import { Button } from "@/components/ui/button";
 import { LandingChart } from "@/components/landing-chart";
+import { useChart } from "@/lib/market/use-feed";
+import { fmtPct, fmtPx } from "@/lib/format";
 
 export const Route = createFileRoute("/")({ component: Home });
 
 function Home() {
+  const { chart, live } = useChart("NQ", "5m", "1d", 20000);
+  const last = chart?.last ?? 29454;
+  const ch = chart?.changePct ?? 0;
+
   return (
     <div className="min-h-dvh bg-bg text-fg">
       <header className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
@@ -36,13 +43,13 @@ function Home() {
             Trading desk
           </p>
           <h1 className="font-display mt-4 max-w-xl text-5xl leading-[1.05] tracking-tight text-fg md:text-6xl">
-            See the range.
+            Live tape.
             <br />
-            Trade the evidence.
+            Your playbooks.
           </h1>
           <p className="mt-6 max-w-md text-base leading-relaxed text-muted">
-            Replay any session, journal every fill, and read the numbers behind opening range,
-            initial balance, and gap fills. Four desks. One product.
+            Mentor writes the book. Replay measures it. Reports and analytics are generated from
+            those fills — not from a canned template.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Button asChild size="lg">
@@ -52,28 +59,33 @@ function Home() {
             </Button>
             <Button asChild size="lg" variant="secondary">
               <Link to="/app/replay">
-                <Play /> Watch a replay
+                <Play /> Replay
               </Link>
             </Button>
           </div>
           <dl className="mt-12 grid grid-cols-3 gap-4 border-t border-border pt-6">
-            <HeroStat k="Sessions modeled" v="60d" />
-            <HeroStat k="Reports" v="7" />
-            <HeroStat k="Markets" v="12" />
+            <HeroStat k="Feed" v={live ? "Live" : "Tape"} />
+            <HeroStat k="Draw" v="TV + tape" />
+            <HeroStat k="Playbooks" v="Import" />
           </dl>
         </div>
         <div className="overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-soft">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div>
-              <div className="font-mono text-sm">ES · Sep 11</div>
-              <div className="text-xs text-muted">NY RTH · 5m · simulated</div>
+              <div className="font-mono text-sm">NQ · 5m</div>
+              <div className="text-xs text-muted">E-mini Nasdaq · NY</div>
             </div>
             <div className="text-right">
-              <div className="font-mono text-sm text-long">ORB break · up</div>
-              <div className="text-xs text-muted">First 15m mapped</div>
+              <div className="font-mono text-sm tabular-nums">{fmtPx(last, 2)}</div>
+              <div className="mt-1 flex items-center justify-end gap-2">
+                <span className={ch >= 0 ? "font-mono text-xs text-long" : "font-mono text-xs text-short"}>
+                  {fmtPct(ch)}
+                </span>
+                <LiveDot live={live} label={live ? "Live" : "Model"} />
+              </div>
             </div>
           </div>
-          <div className="h-[280px] md:h-[340px]">
+          <div className="h-[300px] md:h-[380px]">
             <LandingChart />
           </div>
         </div>
@@ -82,24 +94,24 @@ function Home() {
       <section id="desk" className="border-t border-border">
         <div className="mx-auto grid max-w-6xl gap-px bg-border md:grid-cols-2 lg:grid-cols-4">
           <Pillar
+            kicker="Charts"
+            title="TradingView, plus the tape."
+            body="Live NQ, ES, crude, gold — drawings, killzones, HTF candles, and PO3 on the same session."
+          />
+          <Pillar
             kicker="Replay"
-            title="Sit the session again."
-            body="Jump to any date. Play bar-by-bar with size, stops, and a live P&L. No broker. No adrenaline from a live account."
+            title="Sit a real session again."
+            body="Scrub last month of 5-minute bars. Draw. Place the order you would have placed. It lands in the journal."
+          />
+          <Pillar
+            kicker="Playbooks"
+            title="Mentor writes. Replay measures."
+            body="Validate a book, evaluate it on historical tape, then publish the report. Analytics rolls those reports up."
           />
           <Pillar
             kicker="Reports"
             title="What usually happens."
-            body="Gap fill, opening range, initial balance, power hour. Filter by ticker, weekday, and lookback — then trade the base rate."
-          />
-          <Pillar
-            kicker="Journal"
-            title="Every fill, tagged."
-            body="Setups, R-multiples, notes. The calendar, equity curve, and time-of-day leaks fall out of the same book."
-          />
-          <Pillar
-            kicker="Charts"
-            title="Levels that mean something."
-            body="ORB and IB on the tape, VWAP, volume profile, cumulative delta. Indicators tied to the reports — not a junk drawer."
+            body="Session base rates plus playbook evaluations and user-defined reports — counted, not argued."
           />
         </div>
       </section>
@@ -110,13 +122,13 @@ function Home() {
             <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-subtle">Replay</p>
             <h2 className="font-display mt-3 text-4xl tracking-tight">A year of screen time, compressed.</h2>
             <p className="mt-4 max-w-md text-muted leading-relaxed">
-              Pick ES, NQ, crude, gold, or a name. Scrub the open. Place the order you actually
-              would have placed. Orb records it into the journal so the practice counts.
+              Pick ES, NQ, crude, gold, or a name. Scrub the open. Mark the level. Size the ticket.
+              Load a playbook or go manual. Orb records it so the practice counts.
             </p>
             <ul className="mt-6 space-y-2 text-sm text-muted">
-              <li>— Variable speed, step, and jump-to-close</li>
-              <li>— Paper ticket with stop and target</li>
-              <li>— Prop-firm rules running in the background</li>
+              <li>— Bar-by-bar historical tape, not a random walk</li>
+              <li>— Drawings and indicators that persist on the session</li>
+              <li>— Evaluate a playbook; the report writes itself</li>
             </ul>
           </div>
           <Quote
@@ -137,9 +149,9 @@ function Home() {
               ["Opening range", "First 15 minutes. Break, double break, or hold."],
               ["Initial balance", "First hour as the day’s container and extension map."],
               ["Gap fill", "Overnight gaps as magnets, split by weekday and size."],
-              ["Opening continuation", "Does the first hour’s direction survive the close?"],
-              ["Average daily range", "Fuel gauge for targets and late-day risk."],
-              ["Power hour", "Whether the last hour follows or fades the day."],
+              ["Playbook evals", "Generated when you run a book in replay."],
+              ["Custom reports", "Your metric, your source — playbook or replay fills."],
+              ["Analytics", "The roll-up of those reports. Nothing else."],
             ].map(([t, b]) => (
               <div key={t} className="rounded-lg border border-border bg-bg p-5">
                 <div className="font-medium">{t}</div>
@@ -154,16 +166,16 @@ function Home() {
         <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-subtle">Journal</p>
-            <h2 className="font-display mt-3 text-4xl tracking-tight">A book that talks back.</h2>
+            <h2 className="font-display mt-3 text-4xl tracking-tight">A calendar that talks back.</h2>
             <p className="mt-4 text-muted leading-relaxed">
-              Tag the setup. Keep the note short. Analytics reads the same fills: win rate, profit
-              factor, drawdown, time-of-day, playbook P&L. Mentor can read the book with you.
+              Month net, green days, fills. Click a date. Analytics reads the same book: reports and
+              playbooks, not a second ledger.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            <Mini k="Win rate" v="54%" />
-            <Mini k="Profit factor" v="1.62" />
-            <Mini k="Expectancy" v="+$84" />
+            <Mini k="Win rate" v="from you" />
+            <Mini k="Playbooks" v="evaluated" />
+            <Mini k="Tape" v="live" />
           </div>
         </div>
       </section>
@@ -172,7 +184,7 @@ function Home() {
         <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-5 py-16 md:flex-row md:items-center">
           <div>
             <h2 className="font-display text-3xl tracking-tight">Open the desk.</h2>
-            <p className="mt-2 text-muted">Simulated sessions. No account required.</p>
+            <p className="mt-2 text-muted">Live markets. No account required.</p>
           </div>
           <Button asChild size="lg">
             <Link to="/app">
@@ -184,8 +196,8 @@ function Home() {
 
       <footer className="border-t border-border px-5 py-8 text-xs text-subtle">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <span>Orb · simulated market data for practice. Not a broker. Not advice.</span>
-          <span>Futures, stocks, FX, crypto — replay, reports, journal, charts.</span>
+          <span>Orb · live market data for practice. Not a broker. Not advice.</span>
+          <span>Futures, stocks, FX, crypto — charts, replay, reports, journal.</span>
         </div>
       </footer>
     </div>

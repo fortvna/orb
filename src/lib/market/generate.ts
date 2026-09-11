@@ -1,12 +1,8 @@
 import { hash32, mulberry32, randn } from "./rng";
 import { getSymbol } from "./symbols";
-import {
-  AS_OF_DATE,
-  AS_OF_MINUTES,
-  sessionOpenUnix,
-  weekdayOf,
-} from "./calendar";
-import type { Bar, BreakKind, RangeLevel, SessionDay, SymbolSpec } from "./types";
+import { sessionFromBars } from "./session";
+import { AS_OF_DATE, AS_OF_MINUTES, globexOpenUnix, sessionOpenUnix } from "./calendar";
+import type { Bar, SessionDay, SymbolSpec } from "./types";
 
 const MINUTE_CACHE = new Map<string, Bar[]>();
 const SESSION_CACHE = new Map<string, SessionDay>();
@@ -49,6 +45,7 @@ function pickRegime(spec: SymbolSpec, rng: () => number): Regime {
   return "range";
 }
 
+/** 18:00 ET previous day → 16:00 ET session date (Globex + RTH). */
 export function generateMinuteBars(symbolId: string, date: string): Bar[] {
   const key = `${symbolId}:${date}`;
   const cached = MINUTE_CACHE.get(key);
@@ -56,33 +53,47 @@ export function generateMinuteBars(symbolId: string, date: string): Bar[] {
 
   const spec = getSymbol(symbolId);
   const rng = mulberry32(hash32(`m1:${symbolId}:${date}`));
-  const openUnix = sessionOpenUnix(date);
+  const globex = globexOpenUnix(date);
+  const rthOpen = sessionOpenUnix(date);
   const prevClose = prevCloseFor(spec, date);
   const gap = roundTick(prevClose * (rng() - 0.49) * spec.gapSigma * 2.4, spec.tick);
-  let price = roundTick(prevClose + gap, spec.tick);
-  const open = price;
+  let price = roundTick(prevClose * (1 + (rng() - 0.5) * spec.gapSigma * 0.35), spec.tick);
+  const rthOpenPx = roundTick(prevClose + gap, spec.tick);
   const regime = pickRegime(spec, rng);
   const reversalFlip = 0.28 + rng() * 0.18;
 
-  const n = 390;
+  const n = 1320;
   const bars: Bar[] = [];
   for (let i = 0; i < n; i++) {
-    const t = i / (n - 1);
-    const uShape = 0.65 + 1.15 * (2 * t - 1) ** 2;
-    const lunch = t > 0.38 && t < 0.58 ? 0.52 : 1;
-    const vol = spec.barVol * uShape * lunch;
+    const time = globex + i * 60;
+    const clock = (18 * 60 + i) % (24 * 60);
+    const isRth = clock >= 9 * 60 + 30 && clock < 16 * 60;
+    const rthT = isRth ? (clock - (9 * 60 + 30)) / 390 : 0;
+    const overnight = !isRth;
+    const uShape = isRth ? 0.65 + 1.15 * (2 * rthT - 1) ** 2 : 0.38;
+    const lunch = isRth && rthT > 0.38 && rthT < 0.58 ? 0.52 : 1;
+    const asia = clock >= 20 * 60 || clock < 3 * 60 ? 0.55 : 1;
+    const london = clock >= 3 * 60 && clock < 8 * 60 ? 0.85 : 1;
+    const vol = spec.barVol * uShape * lunch * (overnight ? 0.42 * asia * london : 1);
+
+    if (time === rthOpen) price = rthOpenPx;
 
     let drift = 0;
-    if (regime === "trendUp") drift = spec.barVol * 0.16;
-    else if (regime === "trendDown") drift = -spec.barVol * 0.16;
-    else if (regime === "breakoutUp" && i > 15) drift = spec.barVol * 0.22;
-    else if (regime === "breakoutDown" && i > 15) drift = -spec.barVol * 0.22;
-    else if (regime === "reversalUp")
-      drift = (t < reversalFlip ? -1 : 1) * spec.barVol * 0.2;
-    else if (regime === "reversalDown")
-      drift = (t < reversalFlip ? 1 : -1) * spec.barVol * 0.2;
-    else if (regime === "range" && i > 20)
-      drift = ((open - price) / Math.max(price, 1e-9)) * 0.12;
+    if (isRth) {
+      const iRth = clock - (9 * 60 + 30);
+      if (regime === "trendUp") drift = spec.barVol * 0.16;
+      else if (regime === "trendDown") drift = -spec.barVol * 0.16;
+      else if (regime === "breakoutUp" && iRth > 15) drift = spec.barVol * 0.22;
+      else if (regime === "breakoutDown" && iRth > 15) drift = -spec.barVol * 0.22;
+      else if (regime === "reversalUp")
+        drift = (rthT < reversalFlip ? -1 : 1) * spec.barVol * 0.2;
+      else if (regime === "reversalDown")
+        drift = (rthT < reversalFlip ? 1 : -1) * spec.barVol * 0.2;
+      else if (regime === "range" && iRth > 20)
+        drift = ((rthOpenPx - price) / Math.max(price, 1e-9)) * 0.12;
+    } else {
+      drift = ((prevClose - price) / Math.max(price, 1e-9)) * 0.04;
+    }
 
     const shock = randn(rng) * vol;
     const o = price;
@@ -98,13 +109,18 @@ export function generateMinuteBars(symbolId: string, date: string): Bar[] {
     const baseVol = spec.kind === "crypto" ? 42 : spec.kind === "forex" ? 80 : 18;
     const volume = Math.max(
       1,
-      Math.round((baseVol + Math.abs(c - o) / spec.tick) * uShape * lunch * (8 + rng() * 10)),
+      Math.round(
+        (baseVol + Math.abs(c - o) / spec.tick) *
+          uShape *
+          lunch *
+          (overnight ? 4 + rng() * 6 : 8 + rng() * 10),
+      ),
     );
     const buyShare = 0.5 + dir * 0.16 + (rng() - 0.5) * 0.12;
     const buyVolume = Math.round(volume * Math.min(0.88, Math.max(0.12, buyShare)));
 
     bars.push({
-      time: openUnix + i * 60,
+      time,
       open: o,
       high: h,
       low: l,
@@ -116,8 +132,8 @@ export function generateMinuteBars(symbolId: string, date: string): Bar[] {
     price = c;
   }
 
-  const truncated =
-    date === AS_OF_DATE ? bars.slice(0, Math.max(16, AS_OF_MINUTES)) : bars;
+  const cutoff = date === AS_OF_DATE ? rthOpen + Math.max(16, AS_OF_MINUTES) * 60 : Infinity;
+  const truncated = bars.filter((b) => b.time <= cutoff);
   MINUTE_CACHE.set(key, truncated);
   return truncated;
 }
@@ -144,75 +160,6 @@ export function aggregateBars(bars: Bar[], minutes: number): Bar[] {
   return out;
 }
 
-function rangeOf(bars: Bar[]): RangeLevel {
-  const high = Math.max(...bars.map((b) => b.high));
-  const low = Math.min(...bars.map((b) => b.low));
-  return { high, low, mid: (high + low) / 2, size: high - low };
-}
-
-function classifyBreak(after: Bar[], range: RangeLevel): {
-  kind: BreakKind;
-  time: number | null;
-  first: "up" | "down" | null;
-  extension: number;
-} {
-  let up = false;
-  let down = false;
-  let first: "up" | "down" | null = null;
-  let time: number | null = null;
-  let maxExt = 0;
-  const size = Math.max(range.size, 1e-9);
-  for (const b of after) {
-    if (b.high > range.high) {
-      if (!up && !down) {
-        first = "up";
-        time = b.time;
-      }
-      up = true;
-      maxExt = Math.max(maxExt, (b.high - range.high) / size);
-    }
-    if (b.low < range.low) {
-      if (!up && !down) {
-        first = "down";
-        time = b.time;
-      }
-      if (!down && up && time === null) time = b.time;
-      down = true;
-      maxExt = Math.max(maxExt, (range.low - b.low) / size);
-    }
-  }
-  const kind: BreakKind = up && down ? "both" : up ? "up" : down ? "down" : "none";
-  return { kind, time, first, extension: maxExt };
-}
-
-function vwapOf(bars: Bar[]): number {
-  let pv = 0;
-  let v = 0;
-  for (const b of bars) {
-    const tp = (b.high + b.low + b.close) / 3;
-    pv += tp * b.volume;
-    v += b.volume;
-  }
-  return v ? pv / v : bars[bars.length - 1]?.close ?? 0;
-}
-
-function pocOf(bars: Bar[], tick: number): number {
-  const buckets = new Map<number, number>();
-  for (const b of bars) {
-    const key = Math.round(((b.high + b.low + b.close) / 3) / tick) * tick;
-    buckets.set(key, (buckets.get(key) ?? 0) + b.volume);
-  }
-  let best = bars[0]?.close ?? 0;
-  let max = -1;
-  for (const [px, vol] of buckets) {
-    if (vol > max) {
-      max = vol;
-      best = px;
-    }
-  }
-  return best;
-}
-
 export function getSession(symbolId: string, date: string, barMinutes = 5): SessionDay {
   const key = `${symbolId}:${date}:${barMinutes}`;
   const cached = SESSION_CACHE.get(key);
@@ -222,81 +169,15 @@ export function getSession(symbolId: string, date: string, barMinutes = 5): Sess
   const minutes = generateMinuteBars(symbolId, date);
   const bars = aggregateBars(minutes, barMinutes);
   const prevClose = prevCloseFor(spec, date);
-  const first = bars[0];
-  const last = bars[bars.length - 1];
-  if (!first || !last) {
-    throw new Error(`No bars for ${symbolId} ${date}`);
-  }
-
-  const orbMinutes = Math.max(1, Math.round(15 / barMinutes));
-  const ibMinutes = Math.max(1, Math.round(60 / barMinutes));
-  const orbBars = minutes.slice(0, 15);
-  const ibBars = minutes.slice(0, 60);
-  const orb = rangeOf(orbBars.length ? orbBars : bars.slice(0, orbMinutes));
-  const ib = rangeOf(ibBars.length ? ibBars : bars.slice(0, ibMinutes));
-  const afterOrb = minutes.slice(15);
-  const afterIb = minutes.slice(60);
-  const orbB = classifyBreak(afterOrb, orb);
-  const ibB = classifyBreak(afterIb, ib);
-
-  const high = Math.max(...bars.map((b) => b.high));
-  const low = Math.min(...bars.map((b) => b.low));
-  const gap = first.open - prevClose;
-  const gapDir = gap >= 0 ? 1 : -1;
-  const fillLevel = prevClose;
-  let gapFilled = false;
-  let gapFillTime: number | null = null;
-  if (Math.abs(gap) < spec.tick) {
-    gapFilled = true;
-    gapFillTime = first.time;
-  } else {
-    for (const b of minutes) {
-      if (gapDir > 0 && b.low <= fillLevel) {
-        gapFilled = true;
-        gapFillTime = b.time;
-        break;
-      }
-      if (gapDir < 0 && b.high >= fillLevel) {
-        gapFilled = true;
-        gapFillTime = b.time;
-        break;
-      }
-    }
-  }
-
-  const occ: "up" | "down" = ib.mid >= first.open ? "up" : "down";
-  const occContinued = occ === "up" ? last.close >= ib.high : last.close <= ib.low;
-
-  const session: SessionDay = {
+  const session = sessionFromBars({
     symbol: symbolId,
     date,
-    weekday: weekdayOf(date),
-    bars,
-    barMinutes,
+    bars: minutes,
     prevClose,
-    open: first.open,
-    close: last.close,
-    high,
-    low,
-    gap,
-    gapPct: gap / prevClose,
-    gapFilled,
-    gapFillTime,
-    orb,
-    orbBreak: orbB.kind,
-    orbBreakTime: orbB.time,
-    orbExtension: orbB.extension,
-    ib,
-    ibBreak: ibB.kind,
-    ibBreakTime: ibB.time,
-    ibExtension: ibB.extension,
-    ibFirstBreak: ibB.first,
-    occ,
-    occContinued,
-    range: high - low,
-    vwap: vwapOf(bars),
-    poc: pocOf(bars, spec.tick),
-  };
+    barMinutes: 1,
+  });
+  session.bars = bars;
+  session.barMinutes = barMinutes;
   SESSION_CACHE.set(key, session);
   return session;
 }
@@ -322,6 +203,39 @@ export function ema(values: number[], period: number): number[] {
   return out;
 }
 
+export function sma(values: number[], period: number): number[] {
+  const out: number[] = [];
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i] ?? 0;
+    if (i >= period) sum -= values[i - period] ?? 0;
+    const n = Math.min(i + 1, period);
+    out.push(sum / n);
+  }
+  return out;
+}
+
+export function rsi(values: number[], period = 14): number[] {
+  const out: number[] = [];
+  let avgG = 0;
+  let avgL = 0;
+  for (let i = 0; i < values.length; i++) {
+    const ch = i === 0 ? 0 : (values[i] ?? 0) - (values[i - 1] ?? 0);
+    const g = Math.max(0, ch);
+    const l = Math.max(0, -ch);
+    if (i <= period) {
+      avgG += g / period;
+      avgL += l / period;
+    } else {
+      avgG = (avgG * (period - 1) + g) / period;
+      avgL = (avgL * (period - 1) + l) / period;
+    }
+    const rs = avgL === 0 ? 100 : avgG / avgL;
+    out.push(100 - 100 / (1 + rs));
+  }
+  return out;
+}
+
 export function cumulativeDelta(bars: Bar[]): { time: number; value: number }[] {
   let sum = 0;
   return bars.map((b) => {
@@ -331,6 +245,7 @@ export function cumulativeDelta(bars: Bar[]): { time: number; value: number }[] 
 }
 
 export function volumeProfile(bars: Bar[], tick: number, buckets = 28) {
+  if (!bars.length) return { rows: [], poc: 0, step: tick };
   const lo = Math.min(...bars.map((b) => b.low));
   const hi = Math.max(...bars.map((b) => b.high));
   const step = Math.max(tick, (hi - lo) / buckets);
