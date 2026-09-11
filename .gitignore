@@ -1,0 +1,14 @@
+node_modules
+.vercel
+dist
+.output
+.nitro
+screenshots
+artifacts
+*.log
+.DS_Store
+.grok/skills
+.grok/references
+.grok/og-pending
+AGENTS.md
+AGENTS.project.md

@@ -1,0 +1,157 @@
+import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import {
+  Activity,
+  BookMarked,
+  LayoutDashboard,
+  Library,
+  Menu,
+  MessagesSquare,
+  PlayCircle,
+  ShieldCheck,
+  Table2,
+  X,
+  CandlestickChart,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Logo } from "@/components/brand/logo";
+import { Button } from "@/components/ui/button";
+import { useOrb } from "@/lib/store";
+import { cn } from "@/lib/utils";
+
+const NAV = [
+  { to: "/app", label: "Desk", icon: LayoutDashboard, hint: "What's in play" },
+  { to: "/app/replay", label: "Replay", icon: PlayCircle, hint: "Session playback" },
+  { to: "/app/charts", label: "Charts", icon: CandlestickChart, hint: "Orderflow & tools" },
+  { to: "/app/reports", label: "Reports", icon: Table2, hint: "Historical edge" },
+  { to: "/app/journal", label: "Journal", icon: BookMarked, hint: "Fills & notes" },
+  { to: "/app/analytics", label: "Analytics", icon: Activity, hint: "Performance" },
+  { to: "/app/playbooks", label: "Playbooks", icon: Library, hint: "Rules that pay" },
+  { to: "/app/prop", label: "Prop", icon: ShieldCheck, hint: "Challenge sim" },
+  { to: "/app/mentor", label: "Mentor", icon: MessagesSquare, hint: "Ask the desk" },
+] as const;
+
+const MOBILE = ["/app", "/app/replay", "/app/reports", "/app/journal"] as const;
+
+export function AppShell() {
+  const [open, setOpen] = useState(false);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const hydrate = useOrb((s) => s.hydrate);
+  const ready = useOrb((s) => s.ready);
+
+  useEffect(() => {
+    void useOrb.persist.rehydrate();
+    hydrate();
+  }, [hydrate]);
+
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
+  return (
+    <div className="min-h-dvh bg-bg text-fg">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 flex-col border-r border-border bg-bg-elevated lg:flex">
+        <div className="flex h-14 items-center px-4">
+          <Link to="/" className="flex items-center">
+            <Logo />
+          </Link>
+        </div>
+        <nav className="flex flex-1 flex-col gap-0.5 px-2 py-2">
+          {NAV.map((item) => (
+            <NavLink key={item.to} item={item} pathname={pathname} />
+          ))}
+        </nav>
+        <div className="border-t border-border px-4 py-4">
+          <div className="text-[11px] uppercase tracking-[0.14em] text-subtle">Desk</div>
+          <div className="mt-1 font-mono text-xs text-muted">NY session · simulated</div>
+        </div>
+      </aside>
+
+      <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-bg/90 px-3 backdrop-blur-sm lg:hidden">
+        <Link to="/" className="flex items-center">
+          <Logo />
+        </Link>
+        <Button variant="ghost" size="icon" aria-label="Menu" onClick={() => setOpen(true)}>
+          <Menu />
+        </Button>
+      </header>
+
+      {open ? (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <button
+            className="absolute inset-0 bg-bg/70"
+            aria-label="Close menu"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute inset-y-0 right-0 w-[min(20rem,88vw)] border-l border-border bg-bg-elevated p-4 shadow-soft">
+            <div className="mb-4 flex items-center justify-between">
+              <span className="text-sm text-muted">Modules</span>
+              <Button variant="ghost" size="icon" aria-label="Close" onClick={() => setOpen(false)}>
+                <X />
+              </Button>
+            </div>
+            <nav className="flex flex-col gap-1">
+              {NAV.map((item) => (
+                <NavLink key={item.to} item={item} pathname={pathname} />
+              ))}
+            </nav>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="min-w-0 lg:pl-56">
+        <main className="min-h-dvh min-w-0 overflow-x-hidden pb-20 lg:pb-0">
+          {ready ? (
+            <Outlet />
+          ) : (
+            <div className="flex min-h-[60vh] items-center justify-center text-sm text-muted">
+              Loading desk…
+            </div>
+          )}
+        </main>
+      </div>
+
+      <nav className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t border-border bg-bg-elevated lg:hidden">
+        {NAV.filter((n) => (MOBILE as readonly string[]).includes(n.to)).map((item) => {
+          const active = item.to === "/app" ? pathname === "/app" : pathname.startsWith(item.to);
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.to}
+              to={item.to}
+              className={cn(
+                "flex min-h-14 flex-col items-center justify-center gap-1 text-[11px]",
+                active ? "text-fg" : "text-muted",
+              )}
+            >
+              <Icon className="size-4" />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+    </div>
+  );
+}
+
+function NavLink({
+  item,
+  pathname,
+}: {
+  item: (typeof NAV)[number];
+  pathname: string;
+}) {
+  const active = item.to === "/app" ? pathname === "/app" : pathname.startsWith(item.to);
+  const Icon = item.icon;
+  return (
+    <Link
+      to={item.to}
+      className={cn(
+        "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+        active ? "bg-surface text-fg" : "text-muted hover:bg-surface hover:text-fg",
+      )}
+    >
+      <Icon className="size-4 shrink-0" />
+      <span className="flex-1">{item.label}</span>
+    </Link>
+  );
+}
