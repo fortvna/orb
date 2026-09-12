@@ -1,7 +1,8 @@
 import { hash32, mulberry32, randn } from "./rng";
 import { getSymbol } from "./symbols";
 import { sessionFromBars } from "./session";
-import { AS_OF_DATE, AS_OF_MINUTES, globexOpenUnix, sessionOpenUnix } from "./calendar";
+import { globexOpenUnix, sessionOpenUnix } from "./calendar";
+import { nyMinutesNow, nyToday } from "./clock";
 import type { Bar, SessionDay, SymbolSpec } from "./types";
 
 const MINUTE_CACHE = new Map<string, Bar[]>();
@@ -47,10 +48,6 @@ function pickRegime(spec: SymbolSpec, rng: () => number): Regime {
 
 /** 18:00 ET previous day → 16:00 ET session date (Globex + RTH). */
 export function generateMinuteBars(symbolId: string, date: string): Bar[] {
-  const key = `${symbolId}:${date}`;
-  const cached = MINUTE_CACHE.get(key);
-  if (cached) return cached;
-
   const spec = getSymbol(symbolId);
   const rng = mulberry32(hash32(`m1:${symbolId}:${date}`));
   const globex = globexOpenUnix(date);
@@ -62,7 +59,15 @@ export function generateMinuteBars(symbolId: string, date: string): Bar[] {
   const regime = pickRegime(spec, rng);
   const reversalFlip = 0.28 + rng() * 0.18;
 
-  const n = 1320;
+  let n = 1320;
+  if (date === nyToday()) {
+    const clock = nyMinutesNow();
+    const fromGlobex = clock >= 18 * 60 ? clock - 18 * 60 : clock + (24 * 60 - 18 * 60);
+    n = Math.max(30, Math.min(1320, fromGlobex + 1));
+  }
+  const key = `${symbolId}:${date}:${n}`;
+  const cached = MINUTE_CACHE.get(key);
+  if (cached) return cached;
   const bars: Bar[] = [];
   for (let i = 0; i < n; i++) {
     const time = globex + i * 60;
@@ -132,10 +137,8 @@ export function generateMinuteBars(symbolId: string, date: string): Bar[] {
     price = c;
   }
 
-  const cutoff = date === AS_OF_DATE ? rthOpen + Math.max(16, AS_OF_MINUTES) * 60 : Infinity;
-  const truncated = bars.filter((b) => b.time <= cutoff);
-  MINUTE_CACHE.set(key, truncated);
-  return truncated;
+  MINUTE_CACHE.set(key, bars);
+  return bars;
 }
 
 export function aggregateBars(bars: Bar[], minutes: number): Bar[] {
@@ -186,7 +189,7 @@ export function getSessions(symbolId: string, dates: string[], barMinutes = 5): 
   return dates.map((d) => getSession(symbolId, d, barMinutes));
 }
 
-export function lastPrice(symbolId: string, date = AS_OF_DATE): number {
+export function lastPrice(symbolId: string, date = nyToday()): number {
   const s = getSession(symbolId, date, 5);
   return s.close;
 }

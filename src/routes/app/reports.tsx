@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, ResponsiveContainer, XAxis, YAxis, Tooltip } from "recharts";
 import { PageHead } from "@/components/page-head";
 import { DeskChain } from "@/components/desk-chain";
@@ -20,14 +20,27 @@ import { useOrb } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { CustomReport, ReportId } from "@/lib/market/types";
 
-export const Route = createFileRoute("/app/reports")({ component: ReportsPage });
+type Search = { report?: string };
+
+export const Route = createFileRoute("/app/reports")({
+  component: ReportsPage,
+  validateSearch: (s: Record<string, unknown>): Search => ({
+    report: typeof s.report === "string" ? s.report : undefined,
+  }),
+});
 
 function ReportsPage() {
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
   const [symbol, setSymbol] = useState("NQ");
   const [lookback, setLookback] = useState(20);
-  const [selected, setSelected] = useState<string>("orb");
+  const [selected, setSelected] = useState(search.report ?? "orb");
   const [showCustom, setShowCustom] = useState(false);
-  const { sessions, live, loading } = useSessions(symbol, lookback);
+  const { sessions, daily, available, live, loading, error } = useSessions(symbol, lookback);
+
+  useEffect(() => {
+    if (search.report) setSelected(search.report);
+  }, [search.report]);
   const playbooks = useOrb((s) => s.playbooks);
   const evaluations = useOrb((s) => s.evaluations);
   const customReports = useOrb((s) => s.customReports);
@@ -60,10 +73,15 @@ function ReportsPage() {
     if (selected.startsWith("custom:")) {
       const id = selected.slice(7);
       const cr = customReports.find((r) => r.id === id);
-      if (cr) return buildCustomReport(cr, playbooks, evaluations, trades);
+      if (cr) return buildCustomReport(cr, playbooks, evaluations, trades, sessions);
     }
-    return buildReport(symbol, selected as ReportId, lookback, sessions);
-  }, [selected, symbol, lookback, sessions, playbooks, evaluations, customReports, trades]);
+    return buildReport(symbol, selected as ReportId, lookback, sessions, daily);
+  }, [selected, symbol, lookback, sessions, daily, playbooks, evaluations, customReports, trades]);
+
+  function pick(id: string) {
+    setSelected(id);
+    void navigate({ search: { report: id } });
+  }
 
   return (
     <div>
@@ -72,13 +90,18 @@ function ReportsPage() {
           <DeskChain current="/app/reports" />
           <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted">
-            {live ? `${sessions.length} live sessions` : loading ? "Loading tape" : "Model sessions"}
+            {live
+              ? `${sessions.length}×5m${available > sessions.length ? ` of ${available}` : ""}${daily.length ? ` · ${daily.length} daily` : ""} · Yahoo ~60d cap`
+              : loading
+                ? "Loading tape"
+                : "Waiting on tape"}
           </span>
           <SymbolSelect value={symbol} onChange={setSymbol} />
           <NativeSelect value={lookback} onChange={(e) => setLookback(Number(e.target.value))}>
             <option value={10}>10 sessions</option>
             <option value={20}>20 sessions</option>
             <option value={40}>40 sessions</option>
+            <option value={60}>60 sessions</option>
           </NativeSelect>
           <Button size="sm" variant="secondary" onClick={() => setShowCustom((v) => !v)}>
             New report
@@ -92,7 +115,7 @@ function ReportsPage() {
           <Panel className="h-fit p-2">
             <p className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-[0.14em] text-subtle">Session</p>
             {REPORT_LIST.map((r) => (
-              <NavBtn key={r.id} active={selected === r.id} onClick={() => setSelected(r.id)} title={r.title} blurb={r.blurb} />
+              <NavBtn key={r.id} active={selected === r.id} onClick={() => pick(r.id)} title={r.title} blurb={r.blurb} />
             ))}
           </Panel>
           <Panel className="h-fit p-2">
@@ -101,18 +124,17 @@ function ReportsPage() {
               <NavBtn
                 key={p.id}
                 active={selected === `pb:${p.id}`}
-                onClick={() => setSelected(`pb:${p.id}`)}
+                onClick={() => pick(`pb:${p.id}`)}
                 title={p.name}
-                blurb={p.evaluation ? `${Math.round(p.evaluation.winRate * 100)}% WR · ${p.evaluation.trades} fills` : "Evaluate in replay"}
+                blurb={p.evaluation ? `${Math.round(p.evaluation.winRate * 100)}% WR · ${p.evaluation.trades} fills${p.evaluation.source === "model" ? " · model" : ""}` : "Evaluate in replay"}
               />
             ))}
           </Panel>
-          {customReports.length || true ? (
-            <Panel className="h-fit p-2">
+          <Panel className="h-fit p-2">
               <p className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-[0.14em] text-subtle">Yours</p>
               <NavBtn
                 active={selected === "custom:replay-fills"}
-                onClick={() => setSelected("custom:replay-fills")}
+                onClick={() => pick("custom:replay-fills")}
                 title="Replay fills"
                 blurb="Manual tickets from replay sessions"
               />
@@ -120,14 +142,13 @@ function ReportsPage() {
                 <div key={r.id} className="flex items-start">
                   <NavBtn
                     active={selected === `custom:${r.id}`}
-                    onClick={() => setSelected(`custom:${r.id}`)}
+                    onClick={() => pick(`custom:${r.id}`)}
                     title={r.name}
                     blurb={r.blurb}
                   />
                 </div>
               ))}
             </Panel>
-          ) : null}
         </div>
 
         <div className="space-y-4">
@@ -136,7 +157,7 @@ function ReportsPage() {
               playbooks={playbooks}
               onSave={(r) => {
                 addCustomReport(r);
-                setSelected(`custom:${r.id}`);
+                pick(`custom:${r.id}`);
                 setShowCustom(false);
               }}
               onCancel={() => setShowCustom(false)}
@@ -144,6 +165,20 @@ function ReportsPage() {
           ) : null}
 
           <p className="max-w-2xl text-sm leading-relaxed text-muted">{view.summary}</p>
+          {error && view.source === "session" ? (
+            <p className="text-sm text-short">Tape error: {error}</p>
+          ) : null}
+          {!loading && !sessions.length && view.source === "session" ? (
+            <p className="text-sm text-muted">
+              No live 5m sessions in this window. Wait for the tape, or turn on Model tape for today in Settings.
+            </p>
+          ) : null}
+          {!loading && sessions.length > 0 && sessions.length < lookback && view.source === "session" ? (
+            <p className="text-sm text-muted">
+              Yahoo 5m history returned {sessions.length} of {lookback} sessions
+              {available ? ` (${available} packed on the tape; cap is ~60 Globex days)` : " (tape is thinner than the lookback)"}.
+            </p>
+          ) : null}
           {view.source === "playbook" && !playbooks.find((p) => `pb:${p.id}` === selected)?.evaluation ? (
             <Link to="/app/replay" search={{ mode: "free", playbook: selected.slice(3) }} className="text-sm text-fg underline-offset-2 hover:underline">
               Run this playbook in replay →
@@ -209,7 +244,14 @@ function ReportsPage() {
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium">Notes</h2>
               {selected.startsWith("custom:") && selected !== "custom:replay-fills" ? (
-                <Button size="sm" variant="ghost" onClick={() => removeCustomReport(selected.slice(7))}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    removeCustomReport(selected.slice(7));
+                    pick("orb");
+                  }}
+                >
                   Remove
                 </Button>
               ) : null}
@@ -273,7 +315,7 @@ function CustomForm({
   return (
     <Panel className="p-5">
       <h2 className="text-sm font-medium">User-defined report</h2>
-      <p className="mt-1 text-xs text-muted">Counted from a playbook evaluation or from replay fills.</p>
+      <p className="mt-1 text-xs text-muted">Counted from a playbook evaluation, replay fills, or session tape.</p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
           Name
@@ -285,6 +327,8 @@ function CustomForm({
             <option value="winRate">Win rate</option>
             <option value="expectancy">Expectancy</option>
             <option value="net">Net</option>
+            <option value="fillRate">Fill rate</option>
+            <option value="breakRate">Break rate</option>
           </NativeSelect>
         </label>
         <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
@@ -292,18 +336,23 @@ function CustomForm({
           <NativeSelect className="mt-1 w-full" value={source} onChange={(e) => setSource(e.target.value as CustomReport["source"])}>
             <option value="playbook">Playbook evaluation</option>
             <option value="replay">Replay fills</option>
+            <option value="session">Session tape</option>
           </NativeSelect>
         </label>
-        <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
-          Playbook
-          <NativeSelect className="mt-1 w-full" value={playbookId} onChange={(e) => setPlaybookId(e.target.value)}>
-            {playbooks.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </NativeSelect>
-        </label>
+        {source === "playbook" ? (
+          <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
+            Playbook
+            <NativeSelect className="mt-1 w-full" value={playbookId} onChange={(e) => setPlaybookId(e.target.value)}>
+              {playbooks.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </NativeSelect>
+          </label>
+        ) : (
+          <div />
+        )}
       </div>
       <label className="mt-3 block text-[11px] uppercase tracking-[0.12em] text-subtle">
         Blurb

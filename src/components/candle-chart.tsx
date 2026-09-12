@@ -17,7 +17,14 @@ import type { Bar, IndicatorId, RangeLevel, SessionDay } from "@/lib/market/type
 
 export type ChartOverlay = "vwap" | "ema" | "volume" | "delta";
 
-export type PriceGuide = { price: number; color: string; title: string };
+export type PriceGuide = { price: number; color: string; title: string; solid?: boolean };
+
+export type TimeBand = {
+  startMin: number;
+  endMin: number;
+  label: string;
+  color?: string;
+};
 
 export type ChartMarker = {
   time: number;
@@ -37,6 +44,8 @@ type Geom = {
   plotH: number;
   lo: number;
   hi: number;
+  from: number;
+  to: number;
   xAt: (i: number) => number;
   yAt: (px: number) => number;
   indexAt: (x: number) => number;
@@ -45,7 +54,34 @@ type Geom = {
   rsiH: number;
   volTop: number;
   volH: number;
+  timeH: number;
 };
+
+type View = {
+  from: number;
+  to: number;
+  lo: number | null;
+  hi: number | null;
+  follow: boolean;
+};
+
+type Drag =
+  | {
+      kind: "pan";
+      x: number;
+      y: number;
+      from: number;
+      to: number;
+      lo: number;
+      hi: number;
+      moved: boolean;
+    }
+  | { kind: "price"; y: number; lo: number; hi: number; anchor: number }
+  | { kind: "time"; x: number; from: number; to: number; anchor: number };
+
+const TIME_H = 28;
+const PRICE_W = 70;
+const MIN_BARS = 12;
 
 export function CandleChart({
   bars,
@@ -61,6 +97,8 @@ export function CandleChart({
   watermark,
   compareBars,
   onBarClick,
+  lastPrice,
+  bands = [],
   className,
 }: {
   bars: Bar[];
@@ -76,16 +114,24 @@ export function CandleChart({
   watermark?: string;
   compareBars?: Bar[];
   onBarClick?: (index: number) => void;
+  lastPrice?: number;
+  bands?: TimeBand[];
   className?: string;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLCanvasElement>(null);
   const geomRef = useRef<Geom | null>(null);
   const hoverRef = useRef<{ i: number; x: number; y: number } | null>(null);
+  const viewRef = useRef<View>({ from: 0, to: 0, lo: null, hi: null, follow: true });
+  const dragRef = useRef<Drag | null>(null);
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ dist: number; width: number; anchor: number } | null>(null);
+  const barsRef = useRef(bars);
+  barsRef.current = bars;
   const [draft, setDraft] = useState<{ tool: DrawTool; a: DrawPoint; b?: DrawPoint } | null>(null);
   const interactive = Boolean(onDrawingsChange) && tool !== "select";
   const ids = useMemo<IndicatorId[]>(() => {
-    if (indicators?.length) return indicators;
+    if (indicators) return indicators;
     const out: IndicatorId[] = [];
     if (overlays.includes("volume")) out.push("volume");
     if (overlays.includes("vwap")) out.push("vwap");
@@ -93,14 +139,33 @@ export function CandleChart({
     return out;
   }, [indicators, overlays]);
   const tick = getSymbol(session?.symbol ?? "ES").tick;
-  const visible = useMemo(() => (bars.length > 520 ? bars.slice(-520) : bars), [bars]);
   const model = useMemo(
-    () => buildChartModel(visible, session, tick, compareBars),
-    [visible, session, tick, compareBars],
+    () => buildChartModel(bars, session, tick, compareBars),
+    [bars, session, tick, compareBars],
   );
 
-  const argsRef = useRef({ visible, ids, lines, markers, drawings, draft, model, session, watermark });
-  argsRef.current = { visible, ids, lines, markers, drawings, draft, model, session, watermark };
+  const sessionKey = bars[0]?.time ?? 0;
+  useEffect(() => {
+    viewRef.current = { from: 0, to: barsRef.current.length, lo: null, hi: null, follow: true };
+  }, [sessionKey]);
+
+  useEffect(() => {
+    const n = bars.length;
+    const v = viewRef.current;
+    if (n < 2) return;
+    if (v.follow || v.to <= 0) {
+      const width = Math.max(MIN_BARS, v.to > v.from ? v.to - v.from : n);
+      v.to = n + Math.min(4, width * 0.04);
+      v.from = Math.max(0, v.to - width);
+    } else {
+      const width = Math.max(MIN_BARS, v.to - v.from);
+      v.to = Math.min(v.to, n + width * 0.15);
+      v.from = Math.max(0, Math.min(v.from, n - MIN_BARS));
+    }
+  }, [bars.length]);
+
+  const argsRef = useRef({ bars, ids, lines, markers, drawings, draft, model, session, watermark, lastPrice, bands });
+  argsRef.current = { bars, ids, lines, markers, drawings, draft, model, session, watermark, lastPrice, bands };
 
   const paintNow = () => {
     const canvas = ref.current;
@@ -122,7 +187,7 @@ export function CandleChart({
       ctx,
       w,
       h,
-      a.visible,
+      a.bars,
       a.ids,
       a.lines,
       a.markers,
@@ -132,6 +197,9 @@ export function CandleChart({
       a.session,
       a.watermark,
       hoverRef.current,
+      viewRef.current,
+      a.lastPrice,
+      a.bands,
     );
   };
   const paintRef = useRef(paintNow);
@@ -140,45 +208,133 @@ export function CandleChart({
   useEffect(() => {
     paintNow();
     const wrap = wrapRef.current;
+    const canvas = ref.current;
     if (!wrap) return;
     const ro = new ResizeObserver(() => paintRef.current());
     ro.observe(wrap);
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const geom = geomRef.current;
+      const series = barsRef.current;
+      if (!geom || !series.length) return;
+      const rect = canvas?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const zone = zoneAt(geom, x, y);
+      const factor = Math.exp(e.deltaY * 0.0018);
+      if (zone === "price" || e.altKey || e.shiftKey) {
+        zoomPrice(viewRef.current, geom.priceAt(y), factor, geom);
+      } else {
+        zoomTime(viewRef.current, geom.indexAt(x), factor, series.length);
+      }
+      paintRef.current();
+    };
+    canvas?.addEventListener("wheel", onWheel, { passive: false });
     const t1 = window.setTimeout(() => paintRef.current(), 50);
     const t2 = window.setTimeout(() => paintRef.current(), 250);
     const raf = window.requestAnimationFrame(() => paintRef.current());
     return () => {
       ro.disconnect();
+      canvas?.removeEventListener("wheel", onWheel);
       window.clearTimeout(t1);
       window.clearTimeout(t2);
       window.cancelAnimationFrame(raf);
     };
-  }, [visible, ids, drawings, draft, model, session, watermark]);
+  }, [bars, ids, drawings, draft, model, session, watermark, lines, markers, lastPrice, bands]);
 
   function pointFromEvent(e: React.PointerEvent<HTMLCanvasElement>): DrawPoint | null {
     const canvas = ref.current;
     const geom = geomRef.current;
-    if (!canvas || !geom || !visible.length) return null;
+    if (!canvas || !geom || !bars.length) return null;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const idx = Math.max(0, Math.min(visible.length - 1, geom.indexAt(x)));
-    return { time: visible[idx]!.time, price: geom.priceAt(y) };
+    const idx = Math.max(0, Math.min(bars.length - 1, geom.indexAt(x)));
+    return { time: bars[idx]!.time, price: geom.priceAt(y) };
+  }
+
+  function setCur(next: string) {
+    const canvas = ref.current;
+    if (canvas && canvas.style.cursor !== next) canvas.style.cursor = next;
+  }
+
+  function cursorFor(zone: ReturnType<typeof zoneAt>, grabbing: boolean): string {
+    if (grabbing) return "grabbing";
+    if (zone === "price" || zone === "auto") return "ns-resize";
+    if (zone === "time") return "ew-resize";
+    if (interactive) return "crosshair";
+    if (onBarClick) return "pointer";
+    if (tool === "select") return "grab";
+    return "default";
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    const pt = pointFromEvent(e);
-    if (!pt) return;
-    if (tool === "select" && onBarClick) {
-      const geom = geomRef.current;
-      if (geom) {
-        const rect = e.currentTarget.getBoundingClientRect();
-        onBarClick(Math.max(0, Math.min(visible.length - 1, geom.indexAt(e.clientX - rect.left))));
-      }
+    const geom = geomRef.current;
+    if (!geom || !bars.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    pointersRef.current.set(e.pointerId, { x, y });
+    if (pointersRef.current.size === 2) {
+      const pts = [...pointersRef.current.values()];
+      const dist = Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y);
+      pinchRef.current = {
+        dist: Math.max(24, dist),
+        width: viewRef.current.to - viewRef.current.from,
+        anchor: geom.indexAt((pts[0]!.x + pts[1]!.x) / 2),
+      };
+      dragRef.current = null;
+      e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
-    if (!onDrawingsChange || tool === "select") return;
+    const zone = zoneAt(geom, x, y);
+    if (zone === "auto") {
+      viewRef.current.lo = null;
+      viewRef.current.hi = null;
+      paintRef.current();
+      return;
+    }
+    if (zone === "price") {
+      const lo = viewRef.current.lo ?? geom.lo;
+      const hi = viewRef.current.hi ?? geom.hi;
+      dragRef.current = { kind: "price", y, lo, hi, anchor: geom.priceAt(y) };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setCur("ns-resize");
+      return;
+    }
+    if (zone === "time") {
+      dragRef.current = {
+        kind: "time",
+        x,
+        from: viewRef.current.from,
+        to: viewRef.current.to,
+        anchor: geom.indexAt(x),
+      };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setCur("ew-resize");
+      return;
+    }
+    if (tool === "select" || !onDrawingsChange) {
+      const lo = viewRef.current.lo ?? geom.lo;
+      const hi = viewRef.current.hi ?? geom.hi;
+      dragRef.current = {
+        kind: "pan",
+        x,
+        y,
+        from: viewRef.current.from,
+        to: viewRef.current.to,
+        lo,
+        hi,
+        moved: false,
+      };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+    const pt = pointFromEvent(e);
+    if (!pt) return;
     if (tool === "erase") {
-      const hit = hitDrawing(drawings, pt, geomRef.current, visible);
+      const hit = hitDrawing(drawings, pt, geomRef.current, bars);
       if (hit) onDrawingsChange(drawings.filter((d) => d.id !== hit));
       return;
     }
@@ -213,11 +369,64 @@ export function CandleChart({
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = ref.current;
     const geom = geomRef.current;
-    if (!canvas || !geom || !visible.length) return;
+    if (!canvas || !geom || !bars.length) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const i = Math.max(0, Math.min(visible.length - 1, geom.indexAt(x)));
+    if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x, y });
+    if (pinchRef.current && pointersRef.current.size >= 2) {
+      const pts = [...pointersRef.current.values()];
+      const dist = Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y);
+      const p = pinchRef.current;
+      const next = Math.min(bars.length, Math.max(MIN_BARS, p.width * (p.dist / Math.max(24, dist))));
+      clampTime(viewRef.current, p.anchor - next / 2, p.anchor + next / 2, bars.length);
+      paintRef.current();
+      return;
+    }
+    const drag = dragRef.current;
+    if (drag) {
+      const n = bars.length;
+      if (drag.kind === "pan") {
+        const dx = x - drag.x;
+        const dy = y - drag.y;
+        if (!drag.moved && Math.hypot(dx, dy) < 6) {
+          hoverRef.current = { i: Math.max(0, Math.min(n - 1, geom.indexAt(x))), x, y };
+          paintRef.current();
+          return;
+        }
+        drag.moved = true;
+        const bp = (drag.to - drag.from) / geom.plotW;
+        let from = drag.from - dx * bp;
+        let to = drag.to - dx * bp;
+        clampTime(viewRef.current, from, to, n);
+        if (viewRef.current.lo != null && viewRef.current.hi != null) {
+          const pp = (drag.hi - drag.lo) / geom.plotH;
+          viewRef.current.lo = drag.lo + dy * pp;
+          viewRef.current.hi = drag.hi + dy * pp;
+        }
+        setCur("grabbing");
+        paintRef.current();
+        return;
+      }
+      if (drag.kind === "price") {
+        const factor = Math.exp((y - drag.y) * 0.012);
+        viewRef.current.lo = drag.anchor - (drag.anchor - drag.lo) * factor;
+        viewRef.current.hi = drag.anchor + (drag.hi - drag.anchor) * factor;
+        if (viewRef.current.hi - viewRef.current.lo < 1e-6) {
+          viewRef.current.lo = drag.lo;
+          viewRef.current.hi = drag.hi;
+        }
+        paintRef.current();
+        return;
+      }
+      if (drag.kind === "time") {
+        const factor = Math.exp(-(x - drag.x) * 0.008);
+        zoomTimeFrom(viewRef.current, drag.from, drag.to, drag.anchor, factor, n);
+        paintRef.current();
+        return;
+      }
+    }
+    const i = Math.max(0, Math.min(bars.length - 1, geom.indexAt(x)));
     hoverRef.current = { i, x, y };
     if (draft) {
       const pt = pointFromEvent(e);
@@ -226,10 +435,51 @@ export function CandleChart({
         return;
       }
     }
+    setCur(cursorFor(zoneAt(geom, x, y), false));
+    paintRef.current();
+  }
+
+  function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    const drag = dragRef.current;
+    const geom = geomRef.current;
+    if (drag?.kind === "pan" && !drag.moved && onBarClick && geom && tool === "select") {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (zoneAt(geom, x, y) === "plot") {
+        onBarClick(Math.max(0, Math.min(bars.length - 1, geom.indexAt(x))));
+      }
+    }
+    dragRef.current = null;
+    if (geom) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setCur(cursorFor(zoneAt(geom, e.clientX - rect.left, e.clientY - rect.top), false));
+    }
+  }
+
+  function onDoubleClick(e: React.MouseEvent<HTMLCanvasElement>) {
+    const geom = geomRef.current;
+    if (!geom) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const zone = zoneAt(geom, e.clientX - rect.left, e.clientY - rect.top);
+    const n = bars.length;
+    if (zone === "price" || zone === "auto") {
+      viewRef.current.lo = null;
+      viewRef.current.hi = null;
+    } else if (zone === "time" || zone === "plot") {
+      viewRef.current.from = 0;
+      viewRef.current.to = n;
+      viewRef.current.follow = true;
+      viewRef.current.lo = null;
+      viewRef.current.hi = null;
+    }
     paintRef.current();
   }
 
   function onPointerLeave() {
+    if (dragRef.current) return;
     hoverRef.current = null;
     paintRef.current();
   }
@@ -243,14 +493,65 @@ export function CandleChart({
       <canvas
         ref={ref}
         className="absolute inset-0 block h-full w-full touch-none"
-        style={{ cursor: interactive ? "crosshair" : "crosshair" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
-        onPointerUp={() => undefined}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onDoubleClick={onDoubleClick}
       />
     </div>
   );
+}
+
+function zoneAt(geom: Geom, x: number, y: number): "price" | "time" | "auto" | "plot" | "outside" {
+  if (x >= geom.w - geom.padR) {
+    if (y >= geom.padT && y <= geom.padT + 22) return "auto";
+    if (y >= geom.padT && y <= geom.padT + geom.plotH + 4) return "price";
+  }
+  if (y >= geom.h - geom.timeH && x <= geom.w - geom.padR + 4) return "time";
+  if (x >= geom.padL && x <= geom.w - geom.padR && y >= geom.padT && y < geom.h - geom.timeH) return "plot";
+  return "outside";
+}
+
+function clampTime(view: View, from: number, to: number, n: number) {
+  const width = Math.max(MIN_BARS, to - from);
+  const maxTo = n + Math.max(3, width * 0.12);
+  if (from < 0) {
+    to -= from;
+    from = 0;
+  }
+  if (to > maxTo) {
+    from -= to - maxTo;
+    to = maxTo;
+  }
+  if (from < 0) from = 0;
+  if (to - from < MIN_BARS) to = from + MIN_BARS;
+  view.from = from;
+  view.to = to;
+  view.follow = to >= n - 0.85;
+}
+
+function zoomTime(view: View, anchor: number, factor: number, n: number) {
+  zoomTimeFrom(view, view.from, view.to, anchor, factor, n);
+}
+
+function zoomTimeFrom(view: View, from0: number, to0: number, anchor: number, factor: number, n: number) {
+  const width = Math.max(MIN_BARS, to0 - from0);
+  const next = Math.min(Math.max(n, MIN_BARS), Math.max(MIN_BARS, width * factor));
+  let from = anchor - (anchor - from0) * (next / width);
+  let to = from + next;
+  clampTime(view, from, to, n);
+}
+
+function zoomPrice(view: View, anchor: number, factor: number, geom: Geom) {
+  const lo0 = view.lo ?? geom.lo;
+  const hi0 = view.hi ?? geom.hi;
+  const span = hi0 - lo0 || 1;
+  const next = Math.min(span * 40, Math.max(span * 0.04, span * factor));
+  const scale = next / span;
+  view.lo = anchor - (anchor - lo0) * scale;
+  view.hi = anchor + (hi0 - anchor) * scale;
 }
 
 function paint(
@@ -267,23 +568,27 @@ function paint(
   session: SessionDay | null,
   watermark: string | undefined,
   hover: { i: number; x: number; y: number } | null,
+  view: View,
+  lastPrice?: number,
+  bands: TimeBand[] = [],
 ): Geom {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = CHART.bg;
   ctx.fillRect(0, 0, w, h);
 
   const padL = 8;
-  const padR = 62;
+  const padR = PRICE_W;
   const padT = 28;
   const showVol = ids.includes("volume");
   const showRsi = ids.includes("rsi");
   const volH = showVol ? Math.max(32, h * 0.13) : 0;
   const rsiH = showRsi ? Math.max(36, h * 0.12) : 0;
-  const padB = 22 + volH + rsiH;
+  const timeH = TIME_H;
+  const padB = timeH + volH + rsiH;
   const plotW = Math.max(1, w - padL - padR);
   const plotH = Math.max(1, h - padT - padB);
-  const rsiTop = h - 18 - rsiH;
-  const volTop = h - 18 - rsiH - volH;
+  const rsiTop = h - timeH - rsiH;
+  const volTop = h - timeH - rsiH - volH;
 
   const empty: Geom = {
     w,
@@ -295,6 +600,8 @@ function paint(
     plotH,
     lo: 0,
     hi: 1,
+    from: 0,
+    to: 1,
     xAt: () => padL,
     yAt: () => padT,
     indexAt: () => 0,
@@ -303,6 +610,7 @@ function paint(
     rsiH,
     volTop,
     volH,
+    timeH,
   };
   if (!bars.length) {
     ctx.fillStyle = CHART.text;
@@ -312,8 +620,22 @@ function paint(
     return empty;
   }
 
-  const highs = bars.map((b) => b.high);
-  const lows = bars.map((b) => b.low);
+  let from = view.to > view.from + 1 ? view.from : 0;
+  let to = view.to > view.from + 1 ? view.to : bars.length;
+  const spanX = Math.max(1e-6, to - from);
+  const i0 = Math.max(0, Math.floor(from) - 1);
+  const i1 = Math.min(bars.length - 1, Math.ceil(to) + 1);
+
+  const highs: number[] = [];
+  const lows: number[] = [];
+  for (let i = Math.max(0, Math.floor(from)); i < Math.min(bars.length, Math.ceil(to)); i++) {
+    highs.push(bars[i]!.high);
+    lows.push(bars[i]!.low);
+  }
+  if (!highs.length) {
+    highs.push(bars[bars.length - 1]!.high);
+    lows.push(bars[bars.length - 1]!.low);
+  }
   let lo = Math.min(...lows);
   let hi = Math.max(...highs);
   for (const line of lines) {
@@ -323,19 +645,56 @@ function paint(
   const pad = (hi - lo) * 0.08 || 1;
   lo -= pad;
   hi += pad;
+  if (view.lo != null && view.hi != null && view.hi > view.lo) {
+    lo = view.lo;
+    hi = view.hi;
+  }
   const span = hi - lo || 1;
 
-  const xAt = (i: number) => padL + ((i + 0.5) / bars.length) * plotW;
+  const xAt = (i: number) => padL + ((i - from + 0.5) / spanX) * plotW;
   const yAt = (px: number) => padT + ((hi - px) / span) * plotH;
-  const indexAt = (x: number) => Math.round(((x - padL) / plotW) * bars.length - 0.5);
+  const indexAt = (x: number) => from + ((x - padL) / plotW) * spanX - 0.5;
   const priceAt = (y: number) => hi - ((y - padT) / plotH) * span;
-  const geom: Geom = { w, h, padL, padR, padT, plotW, plotH, lo, hi, xAt, yAt, indexAt, priceAt, rsiTop, rsiH, volTop, volH };
-  const slot = plotW / bars.length;
+  const geom: Geom = {
+    w,
+    h,
+    padL,
+    padR,
+    padT,
+    plotW,
+    plotH,
+    lo,
+    hi,
+    from,
+    to,
+    xAt,
+    yAt,
+    indexAt,
+    priceAt,
+    rsiTop,
+    rsiH,
+    volTop,
+    volH,
+    timeH,
+  };
+  const slot = plotW / spanX;
   const bodyW = Math.max(1.4, Math.min(11, slot * 0.7));
+
+  ctx.fillStyle = "rgba(28,27,24,0.05)";
+  ctx.fillRect(w - padR, padT, padR, plotH);
+  ctx.fillRect(0, h - timeH, w, timeH);
+  ctx.strokeStyle = CHART.border;
+  ctx.beginPath();
+  ctx.moveTo(w - padR, padT);
+  ctx.lineTo(w - padR, padT + plotH);
+  ctx.moveTo(padL, h - timeH);
+  ctx.lineTo(w - padR, h - timeH);
+  ctx.stroke();
 
   if (ids.includes("killzones") || ids.includes("quarterly")) {
     paintBands(ctx, bars, geom, ids);
   }
+  if (bands.length) paintTimeBands(ctx, bars, geom, bands);
 
   if (watermark) {
     ctx.fillStyle = CHART.watermark;
@@ -362,6 +721,12 @@ function paint(
     ctx.fillText(formatAxis(px), w - 8, y);
   }
 
+  ctx.fillStyle = view.lo == null ? CHART.textStrong : CHART.text;
+  ctx.font = "10px 'IBM Plex Sans', sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.fillText("A", w - padR / 2, padT + 6);
+
   if (ids.includes("htf")) paintHtf(ctx, bars, model, geom);
   if (ids.includes("po3") && model.po3) paintPo3(ctx, bars, model.po3, geom);
   if (ids.includes("fvg")) paintFvg(ctx, bars, model, geom);
@@ -370,17 +735,23 @@ function paint(
   for (const line of lines) {
     const y = yAt(line.price);
     ctx.strokeStyle = line.color;
-    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = line.solid ? 1.6 : 1;
+    ctx.setLineDash(line.solid ? [] : [4, 4]);
     ctx.beginPath();
     ctx.moveTo(padL, y);
     ctx.lineTo(w - padR, y);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.lineWidth = 1;
     ctx.fillStyle = line.color;
-    ctx.font = "10px 'IBM Plex Mono', ui-monospace, monospace";
-    ctx.textAlign = "left";
-    ctx.fillText(line.title, padL + 4, y - 8);
+    ctx.font = line.solid
+      ? "600 10px 'IBM Plex Mono', ui-monospace, monospace"
+      : "10px 'IBM Plex Mono', ui-monospace, monospace";
     ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(line.title, w - padR - 6, y - 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
   }
 
   if (ids.includes("openPrice") && model.rthOpen != null) {
@@ -396,7 +767,11 @@ function paint(
     strokeH(ctx, geom, session.low, "rgba(196,92,82,0.7)", "L");
   }
 
-  for (let i = 0; i < bars.length; i++) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(padL, padT, plotW, plotH);
+  ctx.clip();
+  for (let i = i0; i <= i1; i++) {
     const b = bars[i]!;
     const x = xAt(i);
     const up = b.close >= b.open;
@@ -419,20 +794,24 @@ function paint(
       ctx.fillRect(x - bodyW / 2, y1, bodyW, bh);
     }
   }
+  ctx.restore();
 
-  if (ids.includes("vwap")) strokeSeries(ctx, model.vwap, xAt, yAt, CHART.vwap, 1.3);
+  if (ids.includes("vwap")) strokeSeries(ctx, model.vwap, xAt, yAt, CHART.vwap, 1.3, i0, i1);
   if (ids.includes("ema")) {
-    strokeSeries(ctx, model.ema9, xAt, yAt, CHART.emaFast, 1);
-    strokeSeries(ctx, model.ema21, xAt, yAt, CHART.emaSlow, 1);
+    strokeSeries(ctx, model.ema9, xAt, yAt, CHART.emaFast, 1, i0, i1);
+    strokeSeries(ctx, model.ema21, xAt, yAt, CHART.emaSlow, 1, i0, i1);
   }
   if (ids.includes("stdev")) {
-    strokeSeries(ctx, model.stdMid, xAt, yAt, CHART.std, 1);
-    strokeSeries(ctx, model.stdUp, xAt, yAt, CHART.std, 0.8);
-    strokeSeries(ctx, model.stdDn, xAt, yAt, CHART.std, 0.8);
+    strokeSeries(ctx, model.stdMid, xAt, yAt, CHART.std, 1, i0, i1);
+    strokeSeries(ctx, model.stdUp, xAt, yAt, CHART.std, 0.8, i0, i1);
+    strokeSeries(ctx, model.stdDn, xAt, yAt, CHART.std, 0.8, i0, i1);
   }
 
   if (ids.includes("vrvp") || ids.includes("hvn")) {
     paintProfile(ctx, model, geom, ids.includes("hvn"));
+  }
+  if (ids.includes("pvp")) {
+    paintPeriodProfiles(ctx, bars, model, geom);
   }
   if (ids.includes("pivots")) {
     for (const p of model.pivots) {
@@ -482,8 +861,8 @@ function paint(
   }
 
   if (volH > 0) {
-    const maxVol = Math.max(...bars.map((b) => b.volume), 1);
-    for (let i = 0; i < bars.length; i++) {
+    const maxVol = Math.max(...bars.slice(Math.max(0, i0), i1 + 1).map((b) => b.volume), 1);
+    for (let i = i0; i <= i1; i++) {
       const b = bars[i]!;
       const vh = (b.volume / maxVol) * (volH - 4);
       ctx.fillStyle = b.close >= b.open ? CHART.volumeUp : CHART.volumeDown;
@@ -507,11 +886,13 @@ function paint(
     ctx.stroke();
     ctx.beginPath();
     ctx.strokeStyle = CHART.emaFast;
-    model.rsi.forEach((v, i) => {
+    for (let i = i0; i <= i1; i++) {
+      const v = model.rsi[i];
+      if (v == null) continue;
       const y = yR(v);
-      if (i === 0) ctx.moveTo(xAt(i), y);
+      if (i === i0) ctx.moveTo(xAt(i), y);
       else ctx.lineTo(xAt(i), y);
-    });
+    }
     ctx.stroke();
   }
 
@@ -575,22 +956,29 @@ function paint(
       padL + 6,
       15,
     );
+    ctx.fillStyle = CHART.lastTag;
+    const hy = Math.max(padT + 8, Math.min(padT + plotH - 8, hover.y));
+    ctx.fillRect(w - padR + 1, hy - 9, padR - 2, 18);
+    ctx.fillStyle = CHART.up;
+    ctx.font = "11px 'IBM Plex Mono', ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(formatAxis(priceAt(hover.y)), w - 8, hy);
   }
 
   ctx.fillStyle = CHART.text;
-  ctx.textAlign = "left";
+  ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.font = "10px 'IBM Plex Mono', ui-monospace, monospace";
-  let lastHour = -1;
-  const minGap = 52;
+  const shown = Math.max(1, to - from);
+  const minGap = shown < 40 ? 64 : 52;
   let lastLabelX = -999;
-  for (let i = 0; i < bars.length; i++) {
+  for (let i = i0; i <= i1; i++) {
     const p = nyParts(bars[i]!.time);
-    const hour = Math.floor(p.minutes / 60);
-    if (hour === lastHour) continue;
-    lastHour = hour;
+    const step = shown < 28 ? 15 : shown < 80 ? 30 : 60;
+    if (p.minutes % step !== 0) continue;
     const x = xAt(i);
     if (x - lastLabelX < minGap) continue;
+    if (x < padL - 8 || x > w - padR + 8) continue;
     lastLabelX = x;
     ctx.strokeStyle = "rgba(28,27,24,0.08)";
     ctx.beginPath();
@@ -598,20 +986,40 @@ function paint(
     ctx.lineTo(x, padT + plotH);
     ctx.stroke();
     ctx.fillStyle = CHART.text;
-    ctx.textAlign = "center";
-    ctx.fillText(`${String(hour).padStart(2, "0")}:00`, x, h - 6);
+    ctx.fillText(clockLabel(p.minutes, step < 60), x, h - 8);
   }
 
   const last = bars[bars.length - 1]!;
-  const ly = yAt(last.close);
-  ctx.fillStyle = CHART.lastTag;
+  const tagPx = lastPrice && lastPrice > 0 ? lastPrice : last.close;
+  const ly = Math.max(padT + 8, Math.min(padT + plotH - 8, yAt(tagPx)));
+  const lastUp = tagPx >= last.open;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(padL, padT, plotW, plotH);
+  ctx.clip();
+  ctx.strokeStyle = lastUp ? "rgba(28,27,24,0.42)" : "rgba(122,58,50,0.55)";
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padL, ly);
+  ctx.lineTo(w - padR, ly);
+  ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = lastUp ? CHART.up : CHART.down;
   ctx.fillRect(w - padR + 1, ly - 9, padR - 2, 18);
-  ctx.fillStyle = CHART.up;
+  ctx.fillStyle = lastUp ? CHART.textStrong : CHART.up;
   ctx.font = "11px 'IBM Plex Mono', ui-monospace, monospace";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
-  ctx.fillText(formatAxis(last.close), w - 8, ly);
+  ctx.fillText(formatAxis(tagPx), w - 8, ly);
   return geom;
+}
+
+function clockLabel(minutes: number, withMin: boolean): string {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  if (!withMin && m === 0) return `${String(h).padStart(2, "0")}:00`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function paintBands(ctx: CanvasRenderingContext2D, bars: Bar[], geom: Geom, ids: IndicatorId[]) {
@@ -625,15 +1033,41 @@ function paintBands(ctx: CanvasRenderingContext2D, bars: Bar[], geom: Geom, ids:
       if (!inside && start >= 0) {
         const x1 = geom.xAt(start) - 2;
         const x2 = geom.xAt(i - 1) + 2;
-        const w = Math.max(4, x2 - x1);
+        const bw = Math.max(4, x2 - x1);
         ctx.fillStyle = kz.color;
-        ctx.fillRect(x1, geom.padT, w, geom.plotH);
-        if (w > 56) {
+        ctx.fillRect(x1, geom.padT, bw, geom.plotH);
+        if (bw > 56) {
           ctx.fillStyle = "rgba(28,27,24,0.45)";
           ctx.font = "10px 'IBM Plex Sans', sans-serif";
           ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(`${kz.label} KZ`, x1 + w / 2, geom.padT + 6);
+          ctx.textBaseline = "bottom";
+          ctx.fillText(`${kz.label} KZ`, x1 + bw / 2, geom.padT + geom.plotH - 6);
+        }
+        start = -1;
+      }
+    }
+  }
+}
+
+function paintTimeBands(ctx: CanvasRenderingContext2D, bars: Bar[], geom: Geom, bands: TimeBand[]) {
+  for (const band of bands) {
+    let start = -1;
+    for (let i = 0; i <= bars.length; i++) {
+      const m = i < bars.length ? nyParts(bars[i]!.time).minutes : -1;
+      const inside = i < bars.length && inMinRange(m, band.startMin, band.endMin);
+      if (inside && start < 0) start = i;
+      if (!inside && start >= 0) {
+        const x1 = geom.xAt(start) - 2;
+        const x2 = geom.xAt(i - 1) + 2;
+        const bw = Math.max(4, x2 - x1);
+        ctx.fillStyle = band.color ?? "rgba(138,106,58,0.14)";
+        ctx.fillRect(x1, geom.padT, bw, geom.plotH);
+        if (bw > 48) {
+          ctx.fillStyle = "rgba(28,27,24,0.5)";
+          ctx.font = "10px 'IBM Plex Sans', sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText(band.label, x1 + bw / 2, geom.padT + geom.plotH - 6);
         }
         start = -1;
       }
@@ -659,7 +1093,7 @@ function paintQuarterly(ctx: CanvasRenderingContext2D, bars: Bar[], geom: Geom) 
     const q = Math.min(3, Math.floor(fromOpen / (6 * 60)));
     ctx.fillStyle = qColors[q]!;
     const x = geom.xAt(i);
-    const slot = geom.plotW / bars.length;
+    const slot = geom.plotW / Math.max(1, geom.to - geom.from);
     ctx.fillRect(x - slot / 2, geom.padT, slot, geom.plotH);
   }
 }
@@ -729,16 +1163,35 @@ function paintProfile(ctx: CanvasRenderingContext2D, model: ChartModel, geom: Ge
   const width = geom.plotW * 0.22;
   for (const r of model.profile) {
     const y = geom.yAt(r.price);
-    const w = (r.volume / max) * width;
+    const bw = (r.volume / max) * width;
     const isPoc = Math.abs(r.price - model.poc) < 1e-6;
     ctx.fillStyle = isPoc ? "rgba(184,192,204,0.45)" : "rgba(184,192,204,0.12)";
-    ctx.fillRect(geom.w - geom.padR - w, y - 2, w, 4);
+    ctx.fillRect(geom.w - geom.padR - bw, y - 2, bw, 4);
     if (hvn && r.volume > max * 0.72) {
       ctx.strokeStyle = "rgba(184,192,204,0.4)";
       ctx.beginPath();
       ctx.moveTo(geom.padL, y);
       ctx.lineTo(geom.w - geom.padR, y);
       ctx.stroke();
+    }
+  }
+}
+
+function paintPeriodProfiles(ctx: CanvasRenderingContext2D, bars: Bar[], model: ChartModel, geom: Geom) {
+  for (const p of model.periodProfiles) {
+    const i0 = nearest(bars, p.start);
+    const i1 = nearest(bars, p.end);
+    const x0 = geom.xAt(i0);
+    const x1 = geom.xAt(i1);
+    const span = Math.max(24, x1 - x0);
+    const max = Math.max(...p.rows.map((r) => r.volume), 1);
+    const width = Math.min(span * 0.45, geom.plotW * 0.12);
+    for (const r of p.rows) {
+      const y = geom.yAt(r.price);
+      const bw = (r.volume / max) * width;
+      const isPoc = Math.abs(r.price - p.poc) < 1e-6;
+      ctx.fillStyle = isPoc ? "rgba(184,192,204,0.4)" : "rgba(184,192,204,0.1)";
+      ctx.fillRect(x0, y - 1.5, bw, 3);
     }
   }
 }
@@ -750,15 +1203,24 @@ function strokeSeries(
   yAt: (px: number) => number,
   color: string,
   width: number,
+  i0 = 0,
+  i1 = values.length - 1,
 ) {
   ctx.beginPath();
   ctx.strokeStyle = color;
   ctx.lineWidth = width;
-  values.forEach((v, i) => {
+  let started = false;
+  const a = Math.max(0, i0);
+  const b = Math.min(values.length - 1, i1);
+  for (let i = a; i <= b; i++) {
+    const v = values[i];
+    if (v == null) continue;
     const y = yAt(v);
-    if (i === 0) ctx.moveTo(xAt(i), y);
-    else ctx.lineTo(xAt(i), y);
-  });
+    if (!started) {
+      ctx.moveTo(xAt(i), y);
+      started = true;
+    } else ctx.lineTo(xAt(i), y);
+  }
   ctx.stroke();
 }
 
@@ -773,8 +1235,9 @@ function strokeH(ctx: CanvasRenderingContext2D, geom: Geom, price: number, color
   ctx.setLineDash([]);
   ctx.fillStyle = color;
   ctx.font = "10px 'IBM Plex Mono', ui-monospace, monospace";
-  ctx.textAlign = "left";
-  ctx.fillText(label, geom.padL + 4, y - 6);
+  ctx.textAlign = "right";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(label, geom.w - geom.padR - 6, y - 2);
 }
 
 function nearest(bars: Bar[], time: number): number {
@@ -900,19 +1363,20 @@ function clock(unix: number): string {
   });
 }
 
-export function levelLines(orb?: RangeLevel, ib?: RangeLevel): PriceGuide[] {
+export function levelLines(
+  orb?: RangeLevel,
+  ib?: RangeLevel,
+  ids?: IndicatorId[] | null,
+): PriceGuide[] {
+  const on = (id: IndicatorId) => !ids || ids.includes(id);
   const lines: PriceGuide[] = [];
-  if (orb) {
-    lines.push(
-      { price: orb.high, color: CHART.orb, title: "OR H" },
-      { price: orb.low, color: CHART.orb, title: "OR L" },
-    );
+  if (orb && orb.size > 0) {
+    if (on("orH")) lines.push({ price: orb.high, color: CHART.orb, title: "OR H" });
+    if (on("orL")) lines.push({ price: orb.low, color: CHART.orb, title: "OR L" });
   }
-  if (ib) {
-    lines.push(
-      { price: ib.high, color: CHART.ib, title: "IB H" },
-      { price: ib.low, color: CHART.ib, title: "IB L" },
-    );
+  if (ib && ib.size > 0) {
+    if (on("ibH")) lines.push({ price: ib.high, color: CHART.ib, title: "IB H" });
+    if (on("ibL")) lines.push({ price: ib.low, color: CHART.ib, title: "IB L" });
   }
   return lines;
 }

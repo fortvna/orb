@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Logo } from "@/components/brand/logo";
+import { DeskSettings } from "@/components/desk-settings";
 import { LiveDot } from "@/components/live-dot";
 import { Button } from "@/components/ui/button";
 import { useQuotes } from "@/lib/market/use-feed";
@@ -39,11 +40,27 @@ export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hydrate = useOrb((s) => s.hydrate);
   const watchlist = useOrb((s) => s.watchlist);
-  const { live } = useQuotes(watchlist.slice(0, 6), 20000);
+  const { live, error } = useQuotes(watchlist.slice(0, 6), 20000);
 
   useEffect(() => {
-    void useOrb.persist.rehydrate();
-    hydrate();
+    const go = () => {
+      try {
+        hydrate();
+      } catch {
+        try {
+          useOrb.getState().resetDemo();
+          hydrate();
+        } catch {
+          /* keep empty desk rather than crash */
+        }
+      }
+    };
+    if (useOrb.persist.hasHydrated()) {
+      go();
+      return;
+    }
+    const result = useOrb.persist.rehydrate();
+    void Promise.resolve(result).then(go).catch(go);
   }, [hydrate]);
 
   useEffect(() => {
@@ -70,21 +87,19 @@ export function AppShell() {
             <NavLink key={item.to} item={item} pathname={pathname} compact={cinema} />
           ))}
         </nav>
-        <div className={cn("border-t border-border py-4", cinema ? "px-2" : "px-4")}>
+        <div className={cn("border-t border-border py-3", cinema ? "px-2" : "px-3")}>
+          <DeskSettings compact={cinema} />
           {cinema ? (
-            <div className="flex justify-center">
+            <div className="mt-2 flex justify-center">
               <span
                 className={cn("size-1.5 rounded-full", live ? "bg-long" : "bg-subtle")}
-                title={live ? "Live" : "Connecting"}
+                title={live ? "Yahoo" : error ? "Feed down" : "Connecting"}
               />
             </div>
           ) : (
-            <>
-              <div className="text-[11px] uppercase tracking-[0.14em] text-subtle">Desk</div>
-              <div className="mt-2">
-                <LiveDot live={live} label={live ? "NY session · live" : "Connecting feed"} />
-              </div>
-            </>
+            <div className="mt-3">
+              <LiveDot live={live} label={live ? "NY session · Yahoo" : error ? "Feed down" : "Connecting feed"} />
+            </div>
           )}
         </div>
       </aside>
@@ -94,7 +109,7 @@ export function AppShell() {
           <Logo />
         </Link>
         <div className="flex items-center gap-2">
-          <LiveDot live={live} />
+          <LiveDot live={live} label={live ? "Yahoo" : error ? "Feed down" : undefined} />
           <Button variant="ghost" size="icon" aria-label="Menu" onClick={() => setOpen(true)}>
             <Menu />
           </Button>
@@ -120,6 +135,9 @@ export function AppShell() {
                 <NavLink key={item.to} item={item} pathname={pathname} />
               ))}
             </nav>
+            <div className="mt-6 border-t border-border pt-3">
+              <DeskSettings />
+            </div>
           </div>
         </div>
       ) : null}

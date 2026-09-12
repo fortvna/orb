@@ -1,4 +1,6 @@
-import type { Playbook, PlaybookKind } from "./types";
+import type { IndicatorId, Playbook, PlaybookKind } from "./types";
+import { parseClock } from "./clock";
+import { kitForKind } from "./playbook-kit";
 
 function slug(name: string): string {
   const s = name
@@ -23,8 +25,59 @@ export function inferKind(setup: string): PlaybookKind {
   return "custom";
 }
 
+function parseTimeframe(raw: unknown): Playbook["timeframe"] {
+  const s = String(raw ?? "5m").toLowerCase().replace(/\s/g, "");
+  if (s === "1" || s === "1m" || s === "1min") return "1m";
+  if (s === "15" || s === "15m" || s === "15min") return "15m";
+  return "5m";
+}
+
+function numOrNull(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+const INDICATOR_IDS = new Set<string>([
+  "volume",
+  "sessionHL",
+  "keyTimes",
+  "killzones",
+  "openPrice",
+  "vwap",
+  "stdev",
+  "ema",
+  "rsi",
+  "vrvp",
+  "hvn",
+  "pvp",
+  "htf",
+  "po3",
+  "quarterly",
+  "stopHunt",
+  "eqHL",
+  "fvg",
+  "pivots",
+  "smt",
+  "orH",
+  "orL",
+  "ibH",
+  "ibL",
+]);
+
+function parseIndicators(raw: unknown): IndicatorId[] | undefined {
+  const ids = Array.isArray(raw)
+    ? raw.map((x) => String(x).trim())
+    : typeof raw === "string"
+      ? raw.split(/[|,]/).map((s) => s.trim())
+      : [];
+  const out = ids.filter((id): id is IndicatorId => INDICATOR_IDS.has(id));
+  return out.length ? out : undefined;
+}
+
 export function hydratePlaybook(p: Partial<Playbook> & { id: string; name: string }): Playbook {
   const setup = (p.setup || p.name).trim();
+  const kind = p.kind ?? inferKind(setup);
   return {
     id: p.id,
     name: p.name,
@@ -35,7 +88,7 @@ export function hydratePlaybook(p: Partial<Playbook> & { id: string; name: strin
     session: p.session ?? "NY RTH",
     status: p.status ?? "active",
     origin: p.origin ?? "custom",
-    kind: p.kind ?? inferKind(setup),
+    kind,
     symbol: p.symbol ?? "NQ",
     timeframe: p.timeframe ?? "5m",
     windowStart: p.windowStart ?? 9 * 60 + 30,
@@ -44,6 +97,7 @@ export function hydratePlaybook(p: Partial<Playbook> & { id: string; name: strin
     stopTicks: p.stopTicks ?? null,
     validated: p.validated ?? p.status === "validated",
     mentorNotes: p.mentorNotes ?? "",
+    indicators: p.indicators?.length ? p.indicators : kitForKind(kind),
     evaluation: p.evaluation,
   };
 }
@@ -53,7 +107,7 @@ function asPlaybook(raw: Record<string, unknown>, index = 0): Playbook | null {
   if (!name) return null;
   const rulesRaw = raw.rules ?? raw.rule ?? raw.checklist;
   let rules: string[] = [];
-  if (Array.isArray(rulesRaw)) rules = rulesRaw.map((r) => String(r).trim()).filter(Boolean);
+  if (Array.isArray(rulesRaw)) rules = rulesRaw.map((r) => String(r)).map((r) => r.trim()).filter(Boolean);
   else if (typeof rulesRaw === "string") {
     rules = rulesRaw
       .split(/\s*\|\s*|\n|;/g)
@@ -66,6 +120,15 @@ function asPlaybook(raw: Record<string, unknown>, index = 0): Playbook | null {
   )
     ? (kindRaw as PlaybookKind)
     : undefined;
+  const statusRaw = String(raw.status ?? "").toLowerCase();
+  const status =
+    statusRaw === "paused"
+      ? "paused"
+      : statusRaw === "validated"
+        ? "validated"
+        : statusRaw === "draft"
+          ? "draft"
+          : "active";
   return hydratePlaybook({
     id: String(raw.id ?? makeId(name + index)),
     name,
@@ -74,11 +137,16 @@ function asPlaybook(raw: Record<string, unknown>, index = 0): Playbook | null {
     rules,
     invalidation: String(raw.invalidation ?? raw.invalidate ?? raw.stop ?? "").trim(),
     session: String(raw.session ?? raw.when ?? "Any").trim() || "Any",
-    status: raw.status === "paused" ? "paused" : raw.status === "validated" ? "validated" : "active",
+    status,
     origin: "imported",
     kind,
     symbol: String(raw.symbol ?? "NQ"),
+    timeframe: parseTimeframe(raw.timeframe ?? raw.tf),
+    windowStart: parseClock(raw.windowStart ?? raw.windowstart ?? raw.window_start ?? raw.from) ?? 9 * 60 + 30,
+    windowEnd: parseClock(raw.windowEnd ?? raw.windowend ?? raw.window_end ?? raw.to) ?? 16 * 60,
     targetR: Number(raw.targetR ?? raw.target ?? 1) || 1,
+    stopTicks: numOrNull(raw.stopTicks ?? raw.stop_ticks ?? raw.stopticks),
+    indicators: parseIndicators(raw.indicators ?? raw.kit),
   });
 }
 
@@ -169,6 +237,12 @@ function parseMarkdown(text: string): Playbook[] {
         session,
         status: "active",
         origin: "imported",
+        timeframe: parseTimeframe(matchField(body, "timeframe")),
+        windowStart: parseClock(matchField(body, "windowStart") ?? matchField(body, "window")) ?? 9 * 60 + 30,
+        windowEnd: parseClock(matchField(body, "windowEnd")) ?? 16 * 60,
+        stopTicks: numOrNull(matchField(body, "stopTicks")),
+        symbol: matchField(body, "symbol") ?? "NQ",
+        indicators: parseIndicators(matchField(body, "indicators") ?? matchField(body, "kit")),
       }),
     );
   }
@@ -218,15 +292,19 @@ export const PLAYBOOK_TEMPLATE = `{
       "setup": "VWAP",
       "kind": "vwap",
       "symbol": "NQ",
+      "timeframe": "5m",
+      "windowStart": "10:30",
+      "windowEnd": "14:00",
+      "stopTicks": 16,
       "session": "NY RTH",
-      "thesis": "After a morning sweep, a reclaim of session VWAP with delta confirmation is a continuation.",
+      "indicators": ["volume", "ibH", "ibL", "vwap", "ema"],
+      "thesis": "After a morning sweep, a 5-minute close back through session VWAP is a continuation.",
       "rules": [
         "Sweep of the initial-balance extreme first.",
         "Reclaim VWAP on a 5-minute close.",
-        "Delta flips in the same direction.",
         "Stop: other side of VWAP."
       ],
-      "invalidation": "Immediate loss of VWAP with expanding opposing delta."
+      "invalidation": "Immediate loss of VWAP on the next 5-minute close."
     }
   ]
 }

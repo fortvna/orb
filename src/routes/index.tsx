@@ -11,7 +11,7 @@ export const Route = createFileRoute("/")({ component: Home });
 
 function Home() {
   const { chart, live } = useChart("NQ", "5m", "1d", 20000);
-  const last = chart?.last ?? 29454;
+  const last = chart?.last && chart.last > 0 ? chart.last : null;
   const ch = chart?.changePct ?? 0;
 
   return (
@@ -43,13 +43,13 @@ function Home() {
             Trading desk
           </p>
           <h1 className="font-display mt-4 max-w-xl text-5xl leading-[1.05] tracking-tight text-fg md:text-6xl">
-            Live tape.
+            Yahoo tape.
             <br />
             Your playbooks.
           </h1>
           <p className="mt-6 max-w-md text-base leading-relaxed text-muted">
-            Mentor writes the book. Replay measures it. Reports and analytics are generated from
-            those fills — not from a canned template.
+            Mentor writes the book. Replay measures it on Yahoo 5m. Reports and analytics come from those fills —
+            not from a canned template.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Button asChild size="lg">
@@ -64,7 +64,7 @@ function Home() {
             </Button>
           </div>
           <dl className="mt-12 grid grid-cols-3 gap-4 border-t border-border pt-6">
-            <HeroStat k="Feed" v={live ? "Live" : "Tape"} />
+            <HeroStat k="Feed" v={live ? "Yahoo" : "Connecting"} />
             <HeroStat k="Draw" v="TV + tape" />
             <HeroStat k="Playbooks" v="Import" />
           </dl>
@@ -76,12 +76,12 @@ function Home() {
               <div className="text-xs text-muted">E-mini Nasdaq · NY</div>
             </div>
             <div className="text-right">
-              <div className="font-mono text-sm tabular-nums">{fmtPx(last, 2)}</div>
+              <div className="font-mono text-sm tabular-nums">{last != null ? fmtPx(last, 2) : "—"}</div>
               <div className="mt-1 flex items-center justify-end gap-2">
                 <span className={ch >= 0 ? "font-mono text-xs text-long" : "font-mono text-xs text-short"}>
-                  {fmtPct(ch)}
+                  {last != null ? fmtPct(ch) : "waiting"}
                 </span>
-                <LiveDot live={live} label={live ? "Live" : "Model"} />
+                <LiveDot live={live} label={live ? "Live" : "Connecting"} />
               </div>
             </div>
           </div>

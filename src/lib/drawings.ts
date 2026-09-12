@@ -33,3 +33,36 @@ export function drawingId(): string {
 export function needsSecondPoint(tool: DrawTool): boolean {
   return tool === "trend" || tool === "ray" || tool === "rect" || tool === "fib";
 }
+
+export const EMPTY_SESSION_DRAWINGS: Drawing[] = [];
+
+export function sessionDrawKey(symbol: string, date: string): string {
+  return `${symbol}:${date}`;
+}
+
+/** Drawings live on the session (symbol + date), not the timeframe. Old TF-suffixed keys still resolve. */
+export function drawingsForSession(
+  all: Record<string, Drawing[]>,
+  symbol: string,
+  date: string,
+): Drawing[] {
+  if (!symbol || !date) return EMPTY_SESSION_DRAWINGS;
+  const key = sessionDrawKey(symbol, date);
+  if (Object.prototype.hasOwnProperty.call(all, key)) return all[key] ?? EMPTY_SESSION_DRAWINGS;
+  const out: Drawing[] = [];
+  const seen = new Set<string>();
+  for (const [k, list] of Object.entries(all)) {
+    if (!list.length) continue;
+    const legacy =
+      k.startsWith(`replay:${symbol}:${date}:`) ||
+      k.startsWith(`charts:${symbol}:`) ||
+      k === `charts:${symbol}`;
+    if (!legacy) continue;
+    for (const d of list) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      out.push(d);
+    }
+  }
+  return out.length ? out : EMPTY_SESSION_DRAWINGS;
+}

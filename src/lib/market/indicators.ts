@@ -1,11 +1,15 @@
 import { ema, rsi as rsiSeries, sma, volumeProfile } from "./generate";
-import { nyParts } from "./session";
+import { barCoveringClock, nyParts } from "./session";
 import type { Bar, IndicatorId, SessionDay } from "./types";
 
 export const DEFAULT_INDICATORS: IndicatorId[] = [
   "volume",
   "killzones",
   "keyTimes",
+  "orH",
+  "orL",
+  "ibH",
+  "ibL",
   "vwap",
   "htf",
   "po3",
@@ -23,12 +27,16 @@ export const INDICATOR_CATALOG: {
       { id: "keyTimes", name: "Key time levels", blurb: "8:30 / 9:30 / 10:00 opens, extended." },
       { id: "killzones", name: "ICT killzones", blurb: "Asia / London / NY AM / NY PM windows." },
       { id: "openPrice", name: "Opening price", blurb: "Midnight and RTH 09:30 opens." },
+      { id: "orH", name: "OR high", blurb: "Opening range high — top of the first 15 minutes of NY (9:30–9:45 ET)." },
+      { id: "orL", name: "OR low", blurb: "Opening range low — bottom of that same 15-minute window. Sometimes written OB L." },
+      { id: "ibH", name: "IB high", blurb: "Initial balance high — top of the first hour of NY (9:30–10:30 ET)." },
+      { id: "ibL", name: "IB low", blurb: "Initial balance low — bottom of the first hour. The IB contains the opening range." },
     ],
   },
   {
     group: "Bands & averages",
     items: [
-      { id: "vwap", name: "VWAP", blurb: "Session-anchored VWAP." },
+      { id: "vwap", name: "VWAP", blurb: "Session-anchored VWAP from bar typical × Yahoo volume." },
       { id: "stdev", name: "StdDev bands", blurb: "SMA ± k·σ envelope over closes." },
       { id: "ema", name: "EMA", blurb: "Exponential averages — 9 and 21." },
     ],
@@ -40,10 +48,10 @@ export const INDICATOR_CATALOG: {
   {
     group: "Volume",
     items: [
-      { id: "volume", name: "Volume", blurb: "Per-bar volume histogram." },
-      { id: "vrvp", name: "Visible range profile", blurb: "Volume profile over the visible range, with POC." },
-      { id: "hvn", name: "High volume nodes", blurb: "HVN price levels — peaks of the profile." },
-      { id: "pvp", name: "Periodic volume profile", blurb: "A volume profile per period (every 4H), anchored at each open." },
+      { id: "volume", name: "Volume", blurb: "Per-bar Yahoo volume — delayed, not exchange tick." },
+      { id: "vrvp", name: "Visible range profile", blurb: "Volume profile over the visible range from bar volume, with POC." },
+      { id: "hvn", name: "High volume nodes", blurb: "HVN price levels — peaks of the bar-volume profile." },
+      { id: "pvp", name: "Periodic volume profile", blurb: "A 4-hour profile from bar volume, anchored at each period open." },
     ],
   },
   {
@@ -58,7 +66,7 @@ export const INDICATOR_CATALOG: {
     items: [
       { id: "quarterly", name: "Quarterly theory", blurb: "Q1–Q4 of the 18:00→18:00 day." },
       { id: "stopHunt", name: "Stop hunt", blurb: "Wick past a pivot, close back inside." },
-      { id: "smt", name: "SMT divergence", blurb: "Cross-market divergence vs the compared instrument." },
+      { id: "smt", name: "SMT divergence", blurb: "NQ vs ES only. Last two swing highs/lows — not tick correlation." },
     ],
   },
   {
@@ -108,6 +116,13 @@ export type Pivot = { time: number; price: number; kind: "h" | "l" };
 
 export type SmtMark = { time: number; price: number; kind: "bear" | "bull" };
 
+export type PeriodProfile = {
+  start: number;
+  end: number;
+  rows: { price: number; volume: number }[];
+  poc: number;
+};
+
 export type ChartModel = {
   vwap: number[];
   ema9: number[];
@@ -124,6 +139,7 @@ export type ChartModel = {
   stopHunts: { time: number; price: number; kind: "h" | "l" }[];
   smt: SmtMark[];
   profile: { price: number; volume: number }[];
+  periodProfiles: PeriodProfile[];
   poc: number;
   keyOpens: { minutes: number; price: number; label: string }[];
   midnightOpen: number | null;
@@ -164,8 +180,8 @@ export function buildChartModel(
   const stopHunts = findStopHunts(bars, pivots, tick);
   const profile = volumeProfile(bars, tick, 24);
   const keyOpens = findKeyOpens(bars);
-  const midnight = bars.find((b) => nyParts(b.time).minutes === 0);
-  const rth = bars.find((b) => nyParts(b.time).minutes === 9 * 60 + 30);
+  const midnight = barCoveringClock(bars, 0);
+  const rth = barCoveringClock(bars, 9 * 60 + 30);
 
   return {
     vwap,
@@ -183,11 +199,37 @@ export function buildChartModel(
     stopHunts,
     smt: compare?.length ? findSmt(bars, compare) : [],
     profile: profile.rows,
+    periodProfiles: buildPeriodProfiles(bars, tick),
     poc: session?.poc ?? profile.poc,
     keyOpens,
     midnightOpen: midnight?.open ?? null,
     rthOpen: rth?.open ?? session?.open ?? null,
   };
+}
+
+function buildPeriodProfiles(bars: Bar[], tick: number, minutes = 240): PeriodProfile[] {
+  if (bars.length < 8) return [];
+  const groups = new Map<number, Bar[]>();
+  for (const b of bars) {
+    const m = nyParts(b.time).minutes;
+    const fromOpen = (m - 18 * 60 + 24 * 60) % (24 * 60);
+    const bucket = Math.floor(fromOpen / minutes);
+    const list = groups.get(bucket) ?? [];
+    list.push(b);
+    groups.set(bucket, list);
+  }
+  const out: PeriodProfile[] = [];
+  for (const slice of groups.values()) {
+    if (slice.length < 3) continue;
+    const profile = volumeProfile(slice, tick, 16);
+    out.push({
+      start: slice[0]!.time,
+      end: slice[slice.length - 1]!.time,
+      rows: profile.rows,
+      poc: profile.poc,
+    });
+  }
+  return out;
 }
 
 function aggregateHtf(bars: Bar[], minutes: number): HtfCandle[] {
@@ -338,7 +380,7 @@ function findKeyOpens(bars: Bar[]) {
   ];
   const out: { minutes: number; price: number; label: string }[] = [];
   for (const w of want) {
-    const hit = bars.find((b) => nyParts(b.time).minutes === w.minutes);
+    const hit = barCoveringClock(bars, w.minutes);
     if (hit) out.push({ minutes: w.minutes, price: hit.open, label: w.label });
   }
   return out;
@@ -381,5 +423,5 @@ export function rthStartIndex(bars: Bar[]): number {
     const m = nyParts(b.time).minutes;
     return m >= 9 * 60 + 30 && m < 16 * 60;
   });
-  return i < 0 ? Math.max(0, bars.length - 1) : i;
+  return i;
 }

@@ -1,11 +1,11 @@
 import { hash32, mulberry32 } from "./rng";
 import { getSession } from "./generate";
 import { getSymbol } from "./symbols";
-import { listTradingDays } from "./calendar";
-import { evaluatePlaybook } from "./evaluate";
-import type { Playbook, PlaybookEvaluation, PropChallenge, Trade } from "./types";
+import { nyToday } from "./clock";
+import { kitForKind } from "./playbook-kit";
+import type { Playbook, PropChallenge, Trade } from "./types";
 
-export const PLAYBOOKS: Playbook[] = [
+const DESK_BOOKS: Omit<Playbook, "indicators">[] = [
   {
     id: "pb-or",
     name: "Opening range continuation",
@@ -17,7 +17,7 @@ export const PLAYBOOKS: Playbook[] = [
     windowEnd: 11 * 60,
     targetR: 1,
     stopTicks: null,
-    validated: true,
+    validated: false,
     mentorNotes: "Desk default. First single-side break of 09:30–09:45.",
     thesis:
       "After the first 15 minutes, trade the first single-side break and hold for 0.8–1.2× the opening range.",
@@ -29,7 +29,7 @@ export const PLAYBOOKS: Playbook[] = [
     ],
     invalidation: "Double break within 30 minutes, or a news print inside the first hour.",
     session: "NY RTH",
-    status: "validated",
+    status: "active",
     origin: "desk",
   },
   {
@@ -43,7 +43,7 @@ export const PLAYBOOKS: Playbook[] = [
     windowEnd: 12 * 60,
     targetR: 1,
     stopTicks: null,
-    validated: true,
+    validated: false,
     mentorNotes: "Fortvna primary sleeve. First IB break with opening-candle continuation.",
     thesis:
       "The first hour is the container. Trade the first break of IB high/low in the direction of opening candle continuation.",
@@ -55,7 +55,7 @@ export const PLAYBOOKS: Playbook[] = [
     ],
     invalidation: "IB double break or first break that immediately re-enters and holds.",
     session: "NY RTH",
-    status: "validated",
+    status: "active",
     origin: "desk",
   },
   {
@@ -69,7 +69,7 @@ export const PLAYBOOKS: Playbook[] = [
     windowEnd: 10 * 60 + 30,
     targetR: 1,
     stopTicks: null,
-    validated: true,
+    validated: false,
     mentorNotes: "Fade stretched opens back toward prior close.",
     thesis:
       "Unfilled overnight gaps are magnets. Fade stretched opens back toward prior close when fill-rate is historically high.",
@@ -96,16 +96,15 @@ export const PLAYBOOKS: Playbook[] = [
     targetR: 1.2,
     stopTicks: null,
     validated: false,
-    mentorNotes: "Paused until a mentor pass confirms delta filter.",
+    mentorNotes: "Yahoo has no tick delta — this book uses a 5-minute VWAP close only.",
     thesis:
-      "After a morning sweep, a reclaim of session VWAP with delta confirmation is a continuation long/short for the rest of the day.",
+      "After a morning sweep, a 5-minute close back through session VWAP is a continuation for the rest of the day.",
     rules: [
       "Sweep of IB extreme first.",
       "Reclaim VWAP on a 5-minute close.",
-      "Delta flips in the same direction.",
       "Stop: other side of VWAP. Target: session extreme then ADR remainder.",
     ],
-    invalidation: "Immediate loss of VWAP with expanding opposing delta.",
+    invalidation: "Immediate loss of VWAP on the next 5-minute close.",
     session: "NY midday",
     status: "paused",
     origin: "desk",
@@ -147,7 +146,7 @@ export const PLAYBOOKS: Playbook[] = [
     windowEnd: 8 * 60,
     targetR: 1,
     stopTicks: null,
-    validated: true,
+    validated: false,
     mentorNotes: "From Metis / Edgeful 5:30 range notes. First break after the 05:30–05:45 container.",
     thesis:
       "The 05:30 ET range is the London-into-NY container. Trade the first single-side break and hold for 1× the range.",
@@ -159,10 +158,15 @@ export const PLAYBOOKS: Playbook[] = [
     ],
     invalidation: "Both sides trade through before 06:30, or a news print inside the window.",
     session: "London / NY AM",
-    status: "validated",
+    status: "active",
     origin: "imported",
   },
 ];
+
+export const PLAYBOOKS: Playbook[] = DESK_BOOKS.map((p) => ({
+  ...p,
+  indicators: kitForKind(p.kind),
+}));
 
 export const PROP_CHALLENGES: PropChallenge[] = [
   {
@@ -205,6 +209,10 @@ const SETUPS = [
   { setup: "FVG", id: "pb-fvg" },
 ] as const;
 
+export function isSeedTrade(t: Trade): boolean {
+  return t.id.startsWith("sd-") || t.tags.includes("mock");
+}
+
 function decideSide(setup: string, session: ReturnType<typeof getSession>, rng: () => number): "long" | "short" {
   if (setup === "Open range") return session.orbBreak === "down" ? "short" : "long";
   if (setup === "IB") return session.ibFirstBreak === "down" ? "short" : "long";
@@ -212,82 +220,75 @@ function decideSide(setup: string, session: ReturnType<typeof getSession>, rng: 
   return rng() < 0.5 ? "long" : "short";
 }
 
-export function buildSeedTrades(): Trade[] {
-  const days = listTradingDays(52).slice(1);
-  const symbols = ["ES", "NQ", "CL", "GC", "NVDA", "BTCUSD"];
-  const trades: Trade[] = [];
+function tradeOnDay(symbolId: string, date: string, pick: (typeof SETUPS)[number], rng: () => number): Trade | null {
+  const spec = getSymbol(symbolId);
+  const session = getSession(symbolId, date, 5);
+  const side = decideSide(pick.setup, session, rng);
+  const rth = session.bars.filter((b) => {
+    const t = new Date(b.time * 1000);
+    const h = t.getUTCHours();
+    return h >= 13 && h < 21;
+  });
+  const book = rth.length > 20 ? rth : session.bars;
+  const entryBar = book[8 + Math.floor(rng() * 18)] ?? book[5];
+  const exitBar =
+    book[30 + Math.floor(rng() * Math.max(1, book.length - 32))] ?? book[book.length - 1];
+  if (!entryBar || !exitBar) return null;
 
-  for (const date of days) {
-    for (const symbolId of symbols) {
-      const rng = mulberry32(hash32(`tr:${symbolId}:${date}`));
-      if (rng() > 0.18) continue;
-      const spec = getSymbol(symbolId);
-      const session = getSession(symbolId, date, 5);
-      const pick = SETUPS[Math.floor(rng() * SETUPS.length)]!;
-      const side = decideSide(pick.setup, session, rng);
-      const rth = session.bars.filter((b) => {
-        const t = new Date(b.time * 1000);
-        const h = t.getUTCHours();
-        return h >= 13 && h < 21;
-      });
-      const book = rth.length > 20 ? rth : session.bars;
-      const entryBar = book[8 + Math.floor(rng() * 18)] ?? book[5];
-      const exitBar =
-        book[30 + Math.floor(rng() * Math.max(1, book.length - 32))] ?? book[book.length - 1];
-      if (!entryBar || !exitBar) continue;
-
-      const stopDist = Math.max(session.orb.size * (0.55 + rng() * 0.4), spec.tick * 8);
-      const entry = entryBar.close;
-      const stop = side === "long" ? entry - stopDist : entry + stopDist;
-      const winner = rng() < 0.54;
-      let exit: number;
-      let rMultiple: number;
-      if (winner) {
-        rMultiple = 0.7 + rng() * 1.8;
-        exit = side === "long" ? entry + stopDist * rMultiple : entry - stopDist * rMultiple;
-      } else if (rng() < 0.25) {
-        rMultiple = -0.15 - rng() * 0.25;
-        exit = side === "long" ? entry + stopDist * rMultiple : entry - stopDist * rMultiple;
-      } else {
-        rMultiple = -0.85 - rng() * 0.2;
-        exit = stop;
-      }
-
-      const riskUsd = 180 + rng() * 520;
-      const qty = Math.max(1, Math.round(riskUsd / Math.max(stopDist * spec.pointValue, 1)));
-      const pnl = (side === "long" ? exit - entry : entry - exit) * qty * spec.pointValue;
-
-      trades.push({
-        id: `sd-${symbolId}-${date}-${entryBar.time}`,
-        symbol: symbolId,
-        side,
-        qty,
-        entry,
-        exit,
-        entryTime: entryBar.time,
-        exitTime: exitBar.time,
-        stop,
-        target: side === "long" ? entry + stopDist * 1.2 : entry - stopDist * 1.2,
-        pnl,
-        fees: spec.kind === "futures" ? qty * 4.08 : 1,
-        rMultiple,
-        setup: pick.setup,
-        tags: [pick.setup.toLowerCase()],
-        notes: "",
-        source: "journal",
-        playbookId: pick.id,
-        date,
-        open: false,
-      });
-    }
+  const stopDist = Math.max(session.orb.size * (0.55 + rng() * 0.4), spec.tick * 8);
+  const entry = entryBar.close;
+  const stop = side === "long" ? entry - stopDist : entry + stopDist;
+  const winner = rng() < 0.54;
+  let exit: number;
+  let rMultiple: number;
+  if (winner) {
+    rMultiple = 0.7 + rng() * 1.8;
+    exit = side === "long" ? entry + stopDist * rMultiple : entry - stopDist * rMultiple;
+  } else if (rng() < 0.25) {
+    rMultiple = -0.15 - rng() * 0.25;
+    exit = side === "long" ? entry + stopDist * rMultiple : entry - stopDist * rMultiple;
+  } else {
+    rMultiple = -0.85 - rng() * 0.2;
+    exit = stop;
   }
 
-  return trades.sort((a, b) => b.entryTime - a.entryTime);
+  const riskUsd = 180 + rng() * 520;
+  const qty = Math.max(1, Math.round(riskUsd / Math.max(stopDist * spec.pointValue, 1)));
+  const pnl = (side === "long" ? exit - entry : entry - exit) * qty * spec.pointValue;
+
+  return {
+    id: `sd-${symbolId}-${date}-${entryBar.time}`,
+    symbol: symbolId,
+    side,
+    qty,
+    entry,
+    exit,
+    entryTime: entryBar.time,
+    exitTime: exitBar.time,
+    stop,
+    target: side === "long" ? entry + stopDist * 1.2 : entry - stopDist * 1.2,
+    pnl,
+    fees: spec.kind === "futures" ? qty * 4.08 : 1,
+    rMultiple,
+    setup: pick.setup,
+    tags: [pick.setup.toLowerCase(), "mock"],
+    notes: "Model tape · demo fill for today",
+    source: "journal",
+    playbookId: pick.id,
+    date,
+    open: false,
+  };
 }
 
-export function buildSeedEvaluations(playbooks: Playbook[]): PlaybookEvaluation[] {
-  return playbooks
-    .filter((p) => p.status !== "paused")
-    .slice(0, 3)
-    .map((p) => evaluatePlaybook(p, 28));
+/** A handful of demo fills for the current NY session only. */
+export function buildSeedTradesForDay(date = nyToday()): Trade[] {
+  const symbols = ["NQ", "ES", "CL"];
+  const trades: Trade[] = [];
+  for (const symbolId of symbols) {
+    const rng = mulberry32(hash32(`tr-day:${symbolId}:${date}`));
+    const pick = SETUPS[Math.floor(rng() * SETUPS.length)]!;
+    const t = tradeOnDay(symbolId, date, pick, rng);
+    if (t) trades.push(t);
+  }
+  return trades.sort((a, b) => b.entryTime - a.entryTime);
 }

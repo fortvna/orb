@@ -1,39 +1,54 @@
 import { getSessions } from "./generate";
 import { listTradingDays } from "./calendar";
-import { nyParts, rthBars } from "./session";
+import { containerClock, containerMinutes } from "./playbook-kit";
+import { barsInClock, inNyWindow, nyParts, rangeOf, rthBars } from "./session";
 import { getSymbol } from "./symbols";
 import { computePerformance } from "./stats";
-import type { Bar, Playbook, PlaybookEvalSummary, PlaybookEvaluation, SessionDay, Trade } from "./types";
+import { isMockOn } from "../mock";
+import type { Bar, Playbook, PlaybookEvalSummary, PlaybookEvaluation, RangeLevel, SessionDay, Trade } from "./types";
 
-function rthOf(session: SessionDay): Bar[] {
+function workBars(playbook: Playbook, session: SessionDay): Bar[] {
   const spec = getSymbol(session.symbol);
   const rth = rthBars(session.bars, spec.kind);
-  return rth.length >= 8 ? rth : session.bars;
+  const overnight = playbook.windowStart < 9 * 60 + 30 || playbook.windowEnd <= 9 * 60 + 30;
+  const bars = overnight || rth.length < 8 ? session.bars : rth;
+  return bars.length >= 8 ? bars : session.bars;
 }
 
 function inWindow(bar: Bar, startMin: number, endMin: number): boolean {
-  const { minutes } = nyParts(bar.time);
-  return minutes >= startMin && minutes < endMin;
+  return inNyWindow(nyParts(bar.time).minutes, startMin, endMin);
+}
+
+/** First stop or target after the entry bar. Stop wins if both print on the same bar. */
+export function firstExit(
+  bars: Bar[],
+  from: number,
+  side: "long" | "short",
+  stop: number | null,
+  target: number | null,
+): { exit: number; time: number; hit: "stop" | "target" } | null {
+  for (let i = from + 1; i < bars.length; i++) {
+    const b = bars[i]!;
+    if (side === "long") {
+      if (stop != null && b.low <= stop) return { exit: stop, time: b.time, hit: "stop" };
+      if (target != null && b.high >= target) return { exit: target, time: b.time, hit: "target" };
+    } else {
+      if (stop != null && b.high >= stop) return { exit: stop, time: b.time, hit: "stop" };
+      if (target != null && b.low <= target) return { exit: target, time: b.time, hit: "target" };
+    }
+  }
+  return null;
 }
 
 function simulate(
   bars: Bar[],
   from: number,
   side: "long" | "short",
-  entry: number,
   stop: number,
   target: number,
 ): { exit: number; time: number; hit: "stop" | "target" | "close" } {
-  for (let i = from + 1; i < bars.length; i++) {
-    const b = bars[i]!;
-    if (side === "long") {
-      if (b.low <= stop) return { exit: stop, time: b.time, hit: "stop" };
-      if (b.high >= target) return { exit: target, time: b.time, hit: "target" };
-    } else {
-      if (b.high >= stop) return { exit: stop, time: b.time, hit: "stop" };
-      if (b.low <= target) return { exit: target, time: b.time, hit: "target" };
-    }
-  }
+  const hit = firstExit(bars, from, side, stop, target);
+  if (hit) return hit;
   const last = bars[bars.length - 1]!;
   return { exit: last.close, time: last.time, hit: "close" };
 }
@@ -49,7 +64,7 @@ function tradeOf(
   target: number,
 ): Trade {
   const spec = getSymbol(session.symbol);
-  const sim = simulate(bars, entryIdx, side, entryBar.close, stop, target);
+  const sim = simulate(bars, entryIdx, side, stop, target);
   const qty = 1;
   const pnl = (side === "long" ? sim.exit - entryBar.close : entryBar.close - sim.exit) * qty * spec.pointValue;
   const risk = Math.abs((stop - entryBar.close) * qty * spec.pointValue) || 1;
@@ -77,52 +92,105 @@ function tradeOf(
   };
 }
 
-function runOrb(playbook: Playbook, session: SessionDay): Trade | null {
-  const bars = rthOf(session);
-  if (bars.length < 20) return null;
-  const orb = session.orb;
-  if (session.orbBreak === "none" || session.orbBreak === "both") return null;
-  const side = session.orbBreak === "up" ? "long" : "short";
-  const idx = bars.findIndex((b) => session.orbBreakTime && b.time >= session.orbBreakTime);
-  if (idx < 8) return null;
-  const entry = bars[idx]!;
-  if (!inWindow(entry, playbook.windowStart, playbook.windowEnd)) return null;
-  const stop = side === "long" ? orb.low : orb.high;
-  const dist = Math.abs(entry.close - stop) || orb.size;
-  const target = side === "long" ? entry.close + dist * playbook.targetR : entry.close - dist * playbook.targetR;
-  return tradeOf(playbook, session, side, entry, idx, bars, stop, target);
+function stopFromTicks(
+  playbook: Playbook,
+  session: SessionDay,
+  side: "long" | "short",
+  entry: number,
+  fallback: number,
+): number {
+  const spec = getSymbol(session.symbol);
+  if (playbook.stopTicks && playbook.stopTicks > 0) {
+    const dist = playbook.stopTicks * spec.tick;
+    return side === "long" ? entry - dist : entry + dist;
+  }
+  return fallback;
 }
 
-function runIb(playbook: Playbook, session: SessionDay): Trade | null {
-  const bars = rthOf(session);
-  if (bars.length < 30) return null;
-  if (session.ibBreak === "none" || session.ibBreak === "both") return null;
-  const side = session.ibFirstBreak === "up" ? "long" : session.ibFirstBreak === "down" ? "short" : null;
-  if (!side) return null;
-  if (session.occ !== (side === "long" ? "up" : "down")) return null;
-  const idx = bars.findIndex((b) => session.ibBreakTime && b.time >= session.ibBreakTime);
-  if (idx < 12) return null;
+/** High/low of the playbook's mapping range on the bars seen so far (grows with the playhead). */
+export function containerRange(playbook: Playbook, bars: Bar[]): RangeLevel | null {
+  const clock = containerClock(playbook);
+  if (!clock) return null;
+  const container = barsInClock(bars, clock.start, clock.end);
+  if (container.length < 1) return null;
+  return rangeOf(container);
+}
+
+/** Container is the `rangeMinutes` before windowStart; first single-side break inside the window. */
+function runRangeBreak(
+  playbook: Playbook,
+  session: SessionDay,
+  rangeMinutes: number,
+  requireOcc: boolean,
+): Trade | null {
+  const bars = workBars(playbook, session);
+  if (bars.length < 8) return null;
+  const rangeStart = (playbook.windowStart - rangeMinutes + 24 * 60) % (24 * 60);
+  const container = barsInClock(bars, rangeStart, playbook.windowStart);
+  if (container.length < 2) return null;
+  const range = rangeOf(container);
+  const lastContainer = container[container.length - 1]!.time;
+  const occUp = container[container.length - 1]!.close >= container[0]!.open;
+
+  let first: "up" | "down" | null = null;
+  let idx = -1;
+  let sawUp = false;
+  let sawDown = false;
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i]!;
+    if (b.time <= lastContainer) continue;
+    if (!inWindow(b, playbook.windowStart, playbook.windowEnd)) continue;
+    const brokeHigh = b.high > range.high;
+    const brokeLow = b.low < range.low;
+    if (brokeHigh) sawUp = true;
+    if (brokeLow) sawDown = true;
+    if (!first) {
+      if (brokeHigh && !brokeLow) {
+        first = "up";
+        idx = i;
+      } else if (brokeLow && !brokeHigh) {
+        first = "down";
+        idx = i;
+      } else if (brokeHigh && brokeLow) {
+        return null;
+      }
+    }
+  }
+  if (!first || idx < 0) return null;
+  if (sawUp && sawDown) return null;
+  if (requireOcc) {
+    if (occUp && first !== "up") return null;
+    if (!occUp && first !== "down") return null;
+  }
+
+  const side = first === "up" ? "long" : "short";
   const entry = bars[idx]!;
-  if (!inWindow(entry, playbook.windowStart, playbook.windowEnd)) return null;
-  const retrace = session.ib.size * 0.25;
-  const stop = side === "long" ? entry.close - retrace : entry.close + retrace;
+  const retrace = requireOcc ? range.size * 0.25 : 0;
+  const stopFallback = requireOcc
+    ? side === "long"
+      ? entry.close - retrace
+      : entry.close + retrace
+    : side === "long"
+      ? range.low
+      : range.high;
+  const stop = stopFromTicks(playbook, session, side, entry.close, stopFallback);
+  const dist = Math.abs(entry.close - stop) || range.size;
   const target =
-    side === "long"
-      ? entry.close + session.ib.size * playbook.targetR
-      : entry.close - session.ib.size * playbook.targetR;
+    side === "long" ? entry.close + dist * playbook.targetR : entry.close - dist * playbook.targetR;
   return tradeOf(playbook, session, side, entry, idx, bars, stop, target);
 }
 
-function runGap(playbook: Playbook, session: SessionDay): Trade | null {
-  const bars = rthOf(session);
+function runGap(playbook: Playbook, session: SessionDay, prev?: SessionDay): Trade | null {
+  const bars = workBars(playbook, session);
   if (bars.length < 12) return null;
-  const adr = session.range || Math.abs(session.gap) * 4;
+  const adr = prev?.range && prev.range > 0 ? prev.range : Math.abs(session.prevClose) * 0.006;
   if (Math.abs(session.gap) < 0.25 * adr) return null;
   const side: "long" | "short" = session.gap > 0 ? "short" : "long";
   const first = bars[0]!;
   let entryIdx = -1;
   for (let i = 1; i < Math.min(bars.length, 18); i++) {
     const b = bars[i]!;
+    if (!inWindow(b, playbook.windowStart, playbook.windowEnd)) continue;
     if (side === "short" && b.high > first.high && b.close < first.close) {
       entryIdx = i;
       break;
@@ -134,19 +202,24 @@ function runGap(playbook: Playbook, session: SessionDay): Trade | null {
   }
   if (entryIdx < 0) return null;
   const entry = bars[entryIdx]!;
-  const extreme = side === "short" ? Math.max(...bars.slice(0, entryIdx + 1).map((b) => b.high)) : Math.min(...bars.slice(0, entryIdx + 1).map((b) => b.low));
-  const stop = extreme;
+  const extreme =
+    side === "short"
+      ? Math.max(...bars.slice(0, entryIdx + 1).map((b) => b.high))
+      : Math.min(...bars.slice(0, entryIdx + 1).map((b) => b.low));
+  const stop = stopFromTicks(playbook, session, side, entry.close, extreme);
   const target = session.prevClose;
   return tradeOf(playbook, session, side, entry, entryIdx, bars, stop, target);
 }
 
 function runVwap(playbook: Playbook, session: SessionDay): Trade | null {
-  const bars = rthOf(session);
+  const bars = workBars(playbook, session);
   if (bars.length < 40) return null;
-  const sweptHigh = bars.some((b) => b.high > session.ib.high);
-  const sweptLow = bars.some((b) => b.low < session.ib.low);
+  const ib = session.ib.size > 0 ? session.ib : rangeOf(barsInClock(bars, 9 * 60 + 30, 10 * 60 + 30));
+  const sweptHigh = bars.some((b) => b.high > ib.high);
+  const sweptLow = bars.some((b) => b.low < ib.low);
   if (!sweptHigh && !sweptLow) return null;
-  const side: "long" | "short" = sweptLow && !sweptHigh ? "long" : sweptHigh && !sweptLow ? "short" : session.occ === "up" ? "long" : "short";
+  const side: "long" | "short" =
+    sweptLow && !sweptHigh ? "long" : sweptHigh && !sweptLow ? "short" : session.occ === "up" ? "long" : "short";
   let pv = 0;
   let vol = 0;
   let entryIdx = -1;
@@ -169,14 +242,21 @@ function runVwap(playbook: Playbook, session: SessionDay): Trade | null {
   }
   if (entryIdx < 0) return null;
   const entry = bars[entryIdx]!;
-  const stopDist = session.ib.size * 0.35;
-  const stop = side === "long" ? entry.close - stopDist : entry.close + stopDist;
-  const target = side === "long" ? entry.close + stopDist * playbook.targetR : entry.close - stopDist * playbook.targetR;
+  const stopDist = Math.max(ib.size * 0.35, Math.abs(session.orb.size) * 0.35);
+  const stop = stopFromTicks(
+    playbook,
+    session,
+    side,
+    entry.close,
+    side === "long" ? entry.close - stopDist : entry.close + stopDist,
+  );
+  const dist = Math.abs(entry.close - stop) || stopDist;
+  const target = side === "long" ? entry.close + dist * playbook.targetR : entry.close - dist * playbook.targetR;
   return tradeOf(playbook, session, side, entry, entryIdx, bars, stop, target);
 }
 
 function runFvg(playbook: Playbook, session: SessionDay): Trade | null {
-  const bars = rthOf(session);
+  const bars = workBars(playbook, session);
   if (bars.length < 16) return null;
   for (let i = 2; i < Math.min(bars.length, 36); i++) {
     const a = bars[i - 2]!;
@@ -187,7 +267,7 @@ function runFvg(playbook: Playbook, session: SessionDay): Trade | null {
       for (let j = i + 1; j < bars.length; j++) {
         if (bars[j]!.low <= mid) {
           const entry = bars[j]!;
-          const stop = a.high;
+          const stop = stopFromTicks(playbook, session, "long", entry.close, a.high);
           const dist = Math.abs(entry.close - stop) || session.orb.size;
           const target = entry.close + dist * playbook.targetR;
           return tradeOf(playbook, session, "long", entry, j, bars, stop, target);
@@ -199,7 +279,7 @@ function runFvg(playbook: Playbook, session: SessionDay): Trade | null {
       for (let j = i + 1; j < bars.length; j++) {
         if (bars[j]!.high >= mid) {
           const entry = bars[j]!;
-          const stop = a.low;
+          const stop = stopFromTicks(playbook, session, "short", entry.close, a.low);
           const dist = Math.abs(entry.close - stop) || session.orb.size;
           const target = entry.close - dist * playbook.targetR;
           return tradeOf(playbook, session, "short", entry, j, bars, stop, target);
@@ -210,37 +290,68 @@ function runFvg(playbook: Playbook, session: SessionDay): Trade | null {
   return null;
 }
 
-function runSession(playbook: Playbook, session: SessionDay): Trade | null {
+function runSession(playbook: Playbook, session: SessionDay, prev?: SessionDay): Trade | null {
   switch (playbook.kind) {
     case "orb":
-      return runOrb(playbook, session);
+    case "custom":
+      return runRangeBreak(playbook, session, containerMinutes(playbook.kind), false);
     case "ib":
-      return runIb(playbook, session);
+      return runRangeBreak(playbook, session, containerMinutes("ib"), true);
     case "gap":
-      return runGap(playbook, session);
+      return runGap(playbook, session, prev);
     case "vwap":
       return runVwap(playbook, session);
     case "fvg":
       return runFvg(playbook, session);
     default:
-      return runOrb(playbook, session);
+      return null;
   }
+}
+
+function emptyEval(playbook: Playbook, symbol: string, source: PlaybookEvalSummary["source"]): PlaybookEvaluation {
+  const summary: PlaybookEvalSummary = {
+    at: Date.now(),
+    symbol,
+    sessions: 0,
+    trades: 0,
+    wins: 0,
+    winRate: 0,
+    expectancy: 0,
+    profitFactor: 0,
+    net: 0,
+    avgR: 0,
+    source,
+  };
+  return {
+    id: `eval-${playbook.id}-${summary.at}`,
+    playbookId: playbook.id,
+    at: summary.at,
+    symbol,
+    summary,
+    trades: [],
+  };
 }
 
 export function evaluatePlaybook(
   playbook: Playbook,
   lookback = 40,
   liveSessions?: SessionDay[],
+  allowMock = false,
 ): PlaybookEvaluation {
   const symbol = playbook.symbol || "NQ";
-  const dates = listTradingDays(lookback + 1).slice(1);
-  const sessions =
-    liveSessions && liveSessions.length > 6
-      ? liveSessions.slice(0, lookback)
-      : getSessions(symbol, dates, 5);
+  const mock = allowMock || isMockOn();
+  const sessions = liveSessions?.length
+    ? liveSessions.slice(0, lookback)
+    : mock
+      ? getSessions(symbol, listTradingDays(lookback + 1).slice(1), 5)
+      : [];
+  if (!sessions.length) return emptyEval(playbook, symbol, mock ? "model" : "empty");
+
   const trades: Trade[] = [];
-  for (const s of sessions) {
-    const t = runSession({ ...playbook, symbol }, { ...s, symbol });
+  for (let i = 0; i < sessions.length; i++) {
+    const s = sessions[i]!;
+    const prev = sessions[i + 1];
+    const t = runSession({ ...playbook, symbol }, { ...s, symbol }, prev);
     if (t) trades.push(t);
   }
   const perf = computePerformance(trades);
@@ -255,6 +366,7 @@ export function evaluatePlaybook(
     profitFactor: perf.profitFactor,
     net: perf.net,
     avgR: perf.avgR,
+    source: liveSessions?.length ? "live" : "model",
   };
   return {
     id: `eval-${playbook.id}-${summary.at}`,
@@ -266,8 +378,33 @@ export function evaluatePlaybook(
   };
 }
 
-export function setupsFromPlaybook(playbook: Playbook, session: SessionDay): { time: number; side: "long" | "short"; label: string }[] {
+export type PlaybookPlan = {
+  time: number;
+  side: "long" | "short";
+  label: string;
+  entry: number;
+  stop: number;
+  target: number;
+};
+
+export function planFromPlaybook(playbook: Playbook, session: SessionDay): PlaybookPlan | null {
   const t = runSession(playbook, { ...session, symbol: playbook.symbol || session.symbol });
-  if (!t) return [];
-  return [{ time: t.entryTime, side: t.side, label: playbook.name }];
+  if (!t || t.stop == null || t.target == null) return null;
+  return {
+    time: t.entryTime,
+    side: t.side,
+    label: playbook.name,
+    entry: t.entry,
+    stop: t.stop,
+    target: t.target,
+  };
+}
+
+export function setupsFromPlaybook(
+  playbook: Playbook,
+  session: SessionDay,
+): { time: number; side: "long" | "short"; label: string }[] {
+  const plan = planFromPlaybook(playbook, session);
+  if (!plan) return [];
+  return [{ time: plan.time, side: plan.side, label: plan.label }];
 }

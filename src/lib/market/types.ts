@@ -111,6 +111,7 @@ export type PlaybookEvalSummary = {
   profitFactor: number;
   net: number;
   avgR: number;
+  source?: "live" | "model" | "empty";
 };
 
 export type Playbook = {
@@ -132,6 +133,7 @@ export type Playbook = {
   stopTicks: number | null;
   validated: boolean;
   mentorNotes: string;
+  indicators: IndicatorId[];
   evaluation?: PlaybookEvalSummary;
 };
 
@@ -190,6 +192,8 @@ export type ChartFeed = {
   prevClose: number;
   changePct: number;
   asOf: number;
+  /** Actual Yahoo ticker used (may be a same-index micro fallback). */
+  yahoo: string;
 };
 
 export type IndicatorId =
@@ -212,6 +216,10 @@ export type IndicatorId =
   | "eqHL"
   | "fvg"
   | "pivots"
-  | "smt";
+  | "smt"
+  | "orH"
+  | "orL"
+  | "ibH"
+  | "ibL";
 
 export type ReplayMode = "free" | "eval";

@@ -9,8 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Input, NativeSelect, Textarea } from "@/components/ui/input";
 import { evaluateLive } from "@/lib/market/use-feed";
 import { hydratePlaybook, parsePlaybooks, PLAYBOOK_TEMPLATE } from "@/lib/market/playbook-parse";
+import { KIT_CHOICES, kitForKind, kitLabel } from "@/lib/market/playbook-kit";
+import { fmtClock, parseClock } from "@/lib/market/clock";
 import { SYMBOLS } from "@/lib/market/symbols";
-import type { Playbook, PlaybookKind } from "@/lib/market/types";
+import type { IndicatorId, Playbook, PlaybookKind } from "@/lib/market/types";
 import { useOrb } from "@/lib/store";
 
 export const Route = createFileRoute("/app/playbooks")({ component: PlaybooksPage });
@@ -75,7 +77,9 @@ function PlaybooksPage() {
       const { evaluation, live } = await evaluateLive(pb, 40);
       saveEvaluation(evaluation);
       setNotice(
-        `${pb.name}: ${evaluation.summary.trades} fills / ${evaluation.summary.sessions} ${live ? "live" : "model"} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}`,
+        evaluation.summary.source === "empty" || !evaluation.summary.sessions
+          ? `${pb.name}: no live 5m sessions in this window. Try again once the tape loads, or turn on Model tape for today.`
+          : `${pb.name}: ${evaluation.summary.trades} fills / ${evaluation.summary.sessions} ${live ? "live" : "model"} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}`,
       );
     } catch {
       setNotice("Could not evaluate on the live tape.");
@@ -174,13 +178,29 @@ function PlaybooksPage() {
               <Panel key={pb.id} className="flex flex-col p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-xl tracking-tight">{pb.name}</h2>
+                    <h2 className="font-display text-xl tracking-tight">
+                      <Link
+                        to="/app/replay"
+                        search={{ mode: "free", playbook: pb.id }}
+                        className="hover:underline"
+                      >
+                        {pb.name}
+                      </Link>
+                    </h2>
                     <div className="mt-1 text-xs text-muted">
-                      {pb.symbol} · {pb.kind} · {pb.session}
+                      {pb.symbol} · {pb.kind} · {pb.timeframe} · {fmtClock(pb.windowStart)}–
+                      {fmtClock(pb.windowEnd)} · {pb.targetR}R
                       {pb.origin === "imported" ? " · imported" : pb.origin === "mentor" ? " · mentor" : ""}
                     </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {(pb.indicators ?? []).map((id) => (
+                        <span key={id} className="rounded-full bg-surface px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
+                          {kitLabel(id)}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                  <Badge tone={pb.validated ? "long" : pb.status === "paused" ? "muted" : "warn"}>
+                  <Badge tone={pb.validated ? "long" : pb.status === "paused" ? "muted" : pb.status === "draft" ? "muted" : "warn"}>
                     {pb.validated ? "validated" : pb.status}
                   </Badge>
                 </div>
@@ -201,6 +221,7 @@ function PlaybooksPage() {
                         <PnlText value={ev.net} className="text-lg" />
                         <div className="text-xs text-muted">
                           {ev.trades} fills · {Math.round(ev.winRate * 100)}% win · PF {ev.profitFactor.toFixed(2)}
+                          {ev.source === "model" ? " · model tape" : ev.source === "live" ? " · live" : ""}
                         </div>
                       </>
                     ) : (
@@ -211,9 +232,9 @@ function PlaybooksPage() {
                     <Button size="sm" variant="secondary" disabled={evalBusy === pb.id} onClick={() => void runEval(pb)}>
                       {evalBusy === pb.id ? "Evaluating…" : "Evaluate"}
                     </Button>
-                    <Button size="sm" variant="ghost" asChild>
+                    <Button size="sm" asChild>
                       <Link to="/app/replay" search={{ mode: "free", playbook: pb.id }}>
-                        Replay
+                        Run in replay
                       </Link>
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setDraft({ ...pb, rules: pb.rules.length ? pb.rules : [""] })}>
@@ -222,7 +243,12 @@ function PlaybooksPage() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => setStatus(pb.id, pb.status === "active" || pb.status === "validated" ? "paused" : "active")}
+                      onClick={() =>
+                        setStatus(
+                          pb.id,
+                          pb.status === "paused" ? (pb.validated ? "validated" : "active") : "paused",
+                        )
+                      }
                     >
                       {pb.status === "paused" ? "Activate" : "Pause"}
                     </Button>
@@ -266,7 +292,10 @@ function PlaybookForm({
           <NativeSelect
             className="mt-1 w-full"
             value={value.kind}
-            onChange={(e) => onChange({ ...value, kind: e.target.value as PlaybookKind })}
+            onChange={(e) => {
+              const kind = e.target.value as PlaybookKind;
+              onChange({ ...value, kind, indicators: kitForKind(kind) });
+            }}
           >
             <option value="orb">Opening range</option>
             <option value="ib">IB</option>
@@ -285,6 +314,57 @@ function PlaybookForm({
               </option>
             ))}
           </NativeSelect>
+        </label>
+        <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
+          Timeframe
+          <NativeSelect
+            className="mt-1 w-full"
+            value={value.timeframe}
+            onChange={(e) => onChange({ ...value, timeframe: e.target.value as Playbook["timeframe"] })}
+          >
+            <option value="1m">1m</option>
+            <option value="5m">5m</option>
+            <option value="15m">15m</option>
+          </NativeSelect>
+        </label>
+        <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
+          Window start
+          <Input
+            className="mt-1"
+            defaultValue={fmtClock(value.windowStart)}
+            key={`ws-${value.id}-${value.windowStart}`}
+            onBlur={(e) => {
+              const n = parseClock(e.target.value);
+              if (n != null) onChange({ ...value, windowStart: n });
+            }}
+            placeholder="09:45"
+          />
+        </label>
+        <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
+          Window end
+          <Input
+            className="mt-1"
+            defaultValue={fmtClock(value.windowEnd)}
+            key={`we-${value.id}-${value.windowEnd}`}
+            onBlur={(e) => {
+              const n = parseClock(e.target.value);
+              if (n != null) onChange({ ...value, windowEnd: n });
+            }}
+            placeholder="11:00"
+          />
+        </label>
+        <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
+          Stop ticks
+          <Input
+            className="mt-1"
+            type="number"
+            min={0}
+            value={value.stopTicks ?? ""}
+            onChange={(e) =>
+              onChange({ ...value, stopTicks: e.target.value === "" ? null : Number(e.target.value) || null })
+            }
+            placeholder="range stop"
+          />
         </label>
         <label className="text-[11px] uppercase tracking-[0.12em] text-subtle">
           Session
@@ -317,6 +397,36 @@ function PlaybookForm({
             <option value="paused">paused</option>
           </NativeSelect>
         </label>
+      </div>
+      <div className="mt-3">
+        <p className="text-[11px] uppercase tracking-[0.12em] text-subtle">Replay kit</p>
+        <p className="mt-1 text-xs text-muted">
+          Replay loads this kit, the timeframe, and the window. Range high/low, then entry / SL / TP, mark on the tape.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-1">
+          {KIT_CHOICES.map((c) => {
+            const on = value.indicators.includes(c.id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  const next = on
+                    ? value.indicators.filter((id) => id !== c.id)
+                    : [...value.indicators, c.id as IndicatorId];
+                  onChange({ ...value, indicators: next });
+                }}
+                className={
+                  on
+                    ? "rounded-full bg-fg px-2.5 py-1 font-mono text-[10px] uppercase text-bg"
+                    : "rounded-full bg-surface px-2.5 py-1 font-mono text-[10px] uppercase text-muted"
+                }
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
       <label className="mt-3 block text-[11px] uppercase tracking-[0.12em] text-subtle">
         Thesis

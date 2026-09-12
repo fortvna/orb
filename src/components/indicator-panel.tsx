@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useEffect } from "react";
 import { INDICATOR_CATALOG } from "@/lib/market/indicators";
 import type { IndicatorId } from "@/lib/market/types";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,14 @@ export function IndicatorPanel({
   onToggle: (id: IndicatorId) => void;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-bg/80 p-4 backdrop-blur-sm sm:p-10">
       <div className="w-full max-w-4xl rounded-xl border border-border bg-bg-elevated p-5 shadow-soft sm:p-8">
@@ -62,12 +71,9 @@ export function IndicatorPanel({
           ))}
           <section>
             <h3 className="text-[11px] font-medium uppercase tracking-[0.16em] text-subtle">My scripts</h3>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="flex min-h-[7rem] flex-col items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted">
-                <span className="text-lg leading-none">+</span>
-                <span className="mt-2">New indicator</span>
-              </div>
-            </div>
+            <p className="mt-3 rounded-xl border border-border bg-surface-2/40 p-4 text-sm text-muted">
+              Custom indicator scripts are not available yet. Toggle the catalog above — periodic volume profile (PVP) paints a 4-hour profile on the tape.
+            </p>
           </section>
         </div>
       </div>

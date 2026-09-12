@@ -19,6 +19,15 @@ export type Performance = {
   equity: { t: number; v: number; date: string }[];
 };
 
+/** Fills the trader actually took — journal + replay. Never evaluated backtests. */
+export function takenTrades(trades: Trade[], includeSeed = true): Trade[] {
+  return trades.filter((t) => {
+    if (t.source !== "journal" && t.source !== "replay" && t.source !== "prop") return false;
+    if (!includeSeed && (t.id.startsWith("sd-") || t.tags.includes("mock"))) return false;
+    return true;
+  });
+}
+
 export function closedTrades(trades: Trade[]): Trade[] {
   return trades.filter((t) => !t.open && t.exit !== null);
 }
@@ -90,5 +99,80 @@ export function hourOfNy(unix: number): number {
     hour12: false,
     timeZone: "America/New_York",
   }).formatToParts(new Date(unix * 1000));
-  return Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const raw = parts.find((p) => p.type === "hour")?.value ?? "0";
+  return Number(raw === "24" ? "0" : raw);
+}
+
+export type Bucket = {
+  key: string;
+  label: string;
+  n: number;
+  wins: number;
+  winRate: number;
+  net: number;
+  avgR: number;
+};
+
+export function bucketTrades(
+  trades: Trade[],
+  of: (t: Trade) => { key: string; label: string },
+): Bucket[] {
+  const closed = closedTrades(trades);
+  const map = new Map<string, { label: string; items: Trade[] }>();
+  for (const t of closed) {
+    const { key, label } = of(t);
+    const cur = map.get(key) ?? { label, items: [] };
+    cur.items.push(t);
+    map.set(key, cur);
+  }
+  return [...map.entries()]
+    .map(([key, v]) => {
+      const wins = v.items.filter((t) => t.pnl > 0).length;
+      const net = v.items.reduce((s, t) => s + t.pnl, 0);
+      const avgR = v.items.reduce((s, t) => s + t.rMultiple, 0) / (v.items.length || 1);
+      return {
+        key,
+        label: v.label,
+        n: v.items.length,
+        wins,
+        winRate: v.items.length ? wins / v.items.length : 0,
+        net,
+        avgR,
+      };
+    })
+    .sort((a, b) => b.n - a.n || Math.abs(b.net) - Math.abs(a.net));
+}
+
+export function bySetup(trades: Trade[]): Bucket[] {
+  return bucketTrades(trades, (t) => {
+    const label = t.setup.trim() || "Untagged";
+    return { key: label.toLowerCase(), label };
+  });
+}
+
+export function byWeekdayTaken(trades: Trade[]): Bucket[] {
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const rows = bucketTrades(trades, (t) => {
+    const wd = new Date(`${t.date}T12:00:00Z`).getUTCDay();
+    return { key: String(wd), label: names[wd] ?? "?" };
+  });
+  return [1, 2, 3, 4, 5, 0, 6]
+    .map((wd) => rows.find((r) => r.key === String(wd)))
+    .filter((r): r is Bucket => Boolean(r));
+}
+
+export function byHourTaken(trades: Trade[]): Bucket[] {
+  return bucketTrades(trades, (t) => {
+    const h = hourOfNy(t.entryTime);
+    const label = `${String(h).padStart(2, "0")}:00`;
+    return { key: label, label };
+  }).sort((a, b) => a.key.localeCompare(b.key));
+}
+
+export function bySourceTaken(trades: Trade[]): Bucket[] {
+  return bucketTrades(trades, (t) => {
+    if (t.source === "replay") return { key: "replay", label: "Replay" };
+    if (t.source === "prop") return { key: "prop", label: "Prop" };
+    return { key: "journal", label: "Journal" };
+  });
 }

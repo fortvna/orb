@@ -1,40 +1,74 @@
 import { createServerFn } from "@tanstack/react-start";
 import { evaluatePlaybook } from "./evaluate";
-import { sessionsFromIntraday, withDelta } from "./session";
+import { sessionsFromDaily, sessionsFromIntraday, withDelta } from "./session";
 import { getSymbol, SYMBOLS } from "./symbols";
 import type { Bar, ChartFeed, FeedInterval, FeedRange, Playbook, Quote } from "./types";
 
 const mem = new Map<string, { t: number; v: unknown }>();
+const inflight = new Map<string, Promise<unknown>>();
 
 async function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
   const hit = mem.get(key);
   if (hit && Date.now() - hit.t < ttl) return hit.v as T;
-  const v = await fn();
-  mem.set(key, { t: Date.now(), v });
-  if (mem.size > 240) {
-    const first = mem.keys().next().value;
-    if (first) mem.delete(first);
-  }
-  return v;
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const p = fn()
+    .then((v) => {
+      mem.set(key, { t: Date.now(), v });
+      if (mem.size > 240) {
+        const first = mem.keys().next().value;
+        if (first) mem.delete(first);
+      }
+      return v;
+    })
+    .finally(() => {
+      inflight.delete(key);
+    });
+  inflight.set(key, p);
+  return p;
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function yahooJson(url: string): Promise<unknown> {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; OrbDesk/1.0; +https://grok.com)",
-      Accept: "application/json",
-    },
-  });
-  if (!res.ok) throw new Error(`Feed ${res.status}`);
-  return res.json();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`Feed ${res.status}`);
+        await sleep(400 * (attempt + 1));
+        continue;
+      }
+      if (!res.ok) throw new Error(`Feed ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) await sleep(400 * (attempt + 1));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("Feed down");
 }
 
 function lastNum(xs: Array<number | null | undefined>): number | null {
   for (let i = xs.length - 1; i >= 0; i--) {
     const v = xs[i];
-    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
   }
   return null;
+}
+
+function pos(n: unknown): number | null {
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function parseBars(payload: unknown): {
@@ -93,8 +127,8 @@ function parseBars(payload: unknown): {
     });
   }
   const meta = result.meta ?? {};
-  const last = meta.regularMarketPrice ?? lastNum(closes) ?? bars.at(-1)?.close ?? 0;
-  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? bars[0]?.open ?? last;
+  const last = pos(meta.regularMarketPrice) ?? lastNum(closes) ?? pos(bars.at(-1)?.close) ?? 0;
+  const prevClose = pos(meta.chartPreviousClose) ?? pos(meta.previousClose) ?? pos(bars[0]?.open) ?? last;
   const changePct = prevClose ? (last - prevClose) / prevClose : 0;
   return {
     bars: withDelta(bars),
@@ -139,10 +173,11 @@ export const fetchQuotes = createServerFn({ method: "POST" })
         for (const [yahoo, row] of Object.entries(raw)) {
           const id = byYahoo.get(yahoo) ?? byYahoo.get(row.symbol ?? "") ?? null;
           if (!id || !row || typeof row !== "object") continue;
-          const closes = (row.close ?? []).filter((n): n is number => typeof n === "number");
-          const last = row.fulldayPrice ?? closes.at(-1) ?? 0;
-          const prev = row.chartPreviousClose ?? row.previousClose ?? closes[0] ?? last;
-          const change = row.fulldayChange ?? last - prev;
+          const closes = (row.close ?? []).filter((n): n is number => typeof n === "number" && n > 0);
+          const last = pos(row.fulldayPrice) ?? closes.at(-1) ?? 0;
+          if (last <= 0) continue;
+          const prev = pos(row.chartPreviousClose) ?? pos(row.previousClose) ?? closes[0] ?? last;
+          const change = typeof row.fulldayChange === "number" ? row.fulldayChange : last - prev;
           const changePct =
             typeof row.fulldayChangePercent === "number"
               ? row.fulldayChangePercent / 100
@@ -172,10 +207,11 @@ export const fetchQuotes = createServerFn({ method: "POST" })
     }
   });
 
+/** Same-contract futures only — never label QQQ as NQ. */
 const YAHOO_FALLBACKS: Record<string, string[]> = {
-  NQ: ["NQ=F", "MNQ=F", "QQQ"],
-  ES: ["ES=F", "MES=F", "SPY"],
-  YM: ["YM=F", "DIA"],
+  NQ: ["NQ=F", "MNQ=F"],
+  ES: ["ES=F", "MES=F"],
+  YM: ["YM=F", "MYM=F"],
   CL: ["CL=F"],
   GC: ["GC=F"],
 };
@@ -185,8 +221,12 @@ function yahooInterval(interval: FeedInterval): string {
   return interval;
 }
 
+function chartQuery(interval: FeedInterval, range: FeedRange): string {
+  return `interval=${yahooInterval(interval)}&range=${range}&includePrePost=true`;
+}
+
 async function loadChart(id: string, yahoo: string, interval: FeedInterval, range: FeedRange): Promise<ChartFeed> {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?interval=${yahooInterval(interval)}&range=${range}&includePrePost=true`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?${chartQuery(interval, range)}`;
   const parsed = parseBars(await yahooJson(url));
   if (parsed.bars.length < 4) throw new Error("Sparse chart");
   return {
@@ -197,6 +237,7 @@ async function loadChart(id: string, yahoo: string, interval: FeedInterval, rang
     prevClose: parsed.prevClose,
     changePct: parsed.changePct,
     asOf: parsed.asOf,
+    yahoo,
   };
 }
 
@@ -205,7 +246,7 @@ export const fetchChart = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const spec = getSymbol(data.id);
     const interval = data.interval ?? "5m";
-    const range = data.range ?? "1d";
+    const range = data.range ?? "5d";
     const tickers = [...new Set([spec.yahoo, ...(YAHOO_FALLBACKS[data.id] ?? [])])];
     const key = `c:${tickers.join("|")}:${interval}:${range}`;
     const ttl = range === "1mo" || range === "3mo" || range === "1y" ? 180_000 : 12_000;
@@ -227,57 +268,92 @@ export const fetchChart = createServerFn({ method: "POST" })
     }
   });
 
+async function packedSessions(id: string): Promise<{
+  sessions: ReturnType<typeof sessionsFromIntraday>;
+  daily: ReturnType<typeof sessionsFromDaily>;
+}> {
+  const spec = getSymbol(id);
+  const tickers = [...new Set([spec.yahoo, ...(YAHOO_FALLBACKS[id] ?? [])])];
+  const key = `s:${tickers.join("|")}`;
+  return cached(key, 180_000, async () => {
+    let lastErr: unknown;
+    let sessions: ReturnType<typeof sessionsFromIntraday> = [];
+    for (const yahoo of tickers) {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?interval=5m&range=60d&includePrePost=true`;
+        const parsed = parseBars(await yahooJson(url));
+        const list = sessionsFromIntraday(id, parsed.bars);
+        if (list.length >= 4) {
+          sessions = list;
+          break;
+        }
+        lastErr = new Error("Sparse sessions");
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (!sessions.length) {
+      for (const yahoo of tickers) {
+        try {
+          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?interval=5m&range=1mo&includePrePost=true`;
+          const parsed = parseBars(await yahooJson(url));
+          const list = sessionsFromIntraday(id, parsed.bars);
+          if (list.length >= 4) {
+            sessions = list;
+            break;
+          }
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+    }
+    if (!sessions.length) throw lastErr instanceof Error ? lastErr : new Error("Sessions down");
+
+    let daily: ReturnType<typeof sessionsFromDaily> = [];
+    for (const yahoo of tickers) {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?interval=1d&range=1y&includePrePost=true`;
+        const parsed = parseBars(await yahooJson(url));
+        daily = sessionsFromDaily(id, parsed.bars);
+        if (daily.length >= 20) break;
+      } catch {
+        /* optional */
+      }
+    }
+    return { sessions, daily };
+  });
+}
+
 export const fetchSessions = createServerFn({ method: "POST" })
   .validator((input: { id: string; days?: number }) => input)
   .handler(async ({ data }) => {
-    const spec = getSymbol(data.id);
-    const tickers = [...new Set([spec.yahoo, ...(YAHOO_FALLBACKS[data.id] ?? [])])];
-    const key = `s:${tickers.join("|")}`;
     try {
-      const sessions = await cached(key, 180_000, async () => {
-        let lastErr: unknown;
-        for (const yahoo of tickers) {
-          try {
-            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?interval=5m&range=1mo&includePrePost=true`;
-            const parsed = parseBars(await yahooJson(url));
-            const list = sessionsFromIntraday(data.id, parsed.bars);
-            if (list.length >= 4) return list;
-            lastErr = new Error("Sparse sessions");
-          } catch (err) {
-            lastErr = err;
-          }
-        }
-        throw lastErr instanceof Error ? lastErr : new Error("Sessions down");
-      });
+      const packed = await packedSessions(data.id);
       const days = data.days ?? 40;
-      return { ok: true as const, sessions: sessions.slice(0, days) };
+      return {
+        ok: true as const,
+        sessions: packed.sessions.slice(0, days),
+        daily: packed.daily.slice(0, Math.max(days, 80)),
+        available: packed.sessions.length,
+      };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : "Sessions down" };
     }
   });
 
 export const evaluateOnFeed = createServerFn({ method: "POST" })
-  .validator((input: { playbook: Playbook; days?: number }) => input)
+  .validator((input: { playbook: Playbook; days?: number; allowMock?: boolean }) => input)
   .handler(async ({ data }) => {
     const playbook = data.playbook;
     const symbol = playbook.symbol || "NQ";
     const days = data.days ?? 40;
-    const spec = getSymbol(symbol);
-    const tickers = [...new Set([spec.yahoo, ...(YAHOO_FALLBACKS[symbol] ?? [])])];
-    let live = null as ReturnType<typeof sessionsFromIntraday> | null;
-    for (const yahoo of tickers) {
-      try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?interval=5m&range=1mo&includePrePost=true`;
-        const parsed = parseBars(await yahooJson(url));
-        const sessions = sessionsFromIntraday(symbol, parsed.bars);
-        if (sessions.length >= 6) {
-          live = sessions;
-          break;
-        }
-      } catch {
-        /* next ticker */
-      }
+    let live: ReturnType<typeof sessionsFromIntraday> | null = null;
+    try {
+      const packed = await packedSessions(symbol);
+      if (packed.sessions.length >= 4) live = packed.sessions;
+    } catch {
+      live = null;
     }
-    const evaluation = evaluatePlaybook(playbook, days, live ?? undefined);
-    return { ok: true as const, evaluation, live: Boolean(live && live.length >= 6) };
+    const evaluation = evaluatePlaybook(playbook, days, live ?? undefined, Boolean(data.allowMock) && !live);
+    return { ok: true as const, evaluation, live: Boolean(live && live.length >= 4) };
   });

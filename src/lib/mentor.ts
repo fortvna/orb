@@ -4,7 +4,7 @@ export const askMentor = createServerFn({ method: "POST" })
   .validator((input: { question: string; context: string }) => input)
   .handler(async ({ data }) => {
     const apiKey = process.env.XAI_API_KEY;
-    if (!apiKey) return { ok: false as const, error: "Mentor is unavailable in this environment." };
+    if (!apiKey) return { ok: false as const, error: "Mentor needs an xAI key in this environment. You still get a local mechanical draft — evaluate it in replay." };
 
     const question = data.question.slice(0, 800);
     const context = data.context.slice(0, 5000);

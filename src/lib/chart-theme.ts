@@ -27,4 +27,7 @@ export const CHART = {
   crosshair: "rgba(28,27,24,0.4)",
   watermark: "rgba(28,27,24,0.08)",
   lastTag: "#1c1b18",
+  entry: "#1c1b18",
+  stop: "#7a3a32",
+  target: "#2f5a45",
 } as const;

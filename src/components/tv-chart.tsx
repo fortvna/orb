@@ -1,23 +1,15 @@
 import { useEffect, useRef } from "react";
 import { getSymbol } from "@/lib/market/symbols";
-import type { FeedInterval } from "@/lib/market/types";
 import { cn } from "@/lib/utils";
 
-function tvInterval(interval: FeedInterval): string {
-  if (interval === "1m") return "1";
-  if (interval === "5m") return "5";
-  if (interval === "15m") return "15";
-  if (interval === "60m") return "60";
-  return "D";
-}
-
+/** TradingView interval codes: 1, 3, 5, 15, 30, 60, 120, 240, D, W. */
 export function TradingViewChart({
   symbol,
   interval,
   className,
 }: {
   symbol: string;
-  interval: FeedInterval;
+  interval: string;
   className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -43,7 +35,7 @@ export function TradingViewChart({
     script.text = JSON.stringify({
       autosize: true,
       symbol: spec.tv,
-      interval: tvInterval(interval),
+      interval,
       timezone: "America/New_York",
       theme: "dark",
       style: "1",

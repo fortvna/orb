@@ -9,7 +9,7 @@ export function LiveDot({ live, label }: { live: boolean; label?: string }) {
           live ? "bg-long shadow-[0_0_8px_var(--color-long)]" : "bg-subtle",
         )}
       />
-      <span className={live ? "text-long" : "text-muted"}>{label ?? (live ? "Live" : "Delayed")}</span>
+      <span className={live ? "text-long" : "text-muted"}>{label ?? (live ? "Live" : "Connecting")}</span>
     </span>
   );
 }

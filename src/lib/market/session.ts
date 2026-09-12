@@ -27,14 +27,18 @@ export function nyParts(unix: number): { date: string; minutes: number; weekday:
   };
 }
 
-/** CME Globex session date: 18:00 ET belongs to the next trading day. */
-export function globexDate(unix: number): string {
-  const p = nyParts(unix);
-  if (p.minutes < 18 * 60) return p.date;
-  let next = shiftDate(p.date, 1);
+function nextSessionDate(date: string): string {
+  let next = date;
   let guard = 0;
   while (!isTradingDay(next) && guard++ < 6) next = shiftDate(next, 1);
   return next;
+}
+
+/** CME Globex session date: 18:00 ET belongs to the next trading day. Weekends roll forward. */
+export function globexDate(unix: number): string {
+  const p = nyParts(unix);
+  let date = p.minutes >= 18 * 60 ? shiftDate(p.date, 1) : p.date;
+  return nextSessionDate(date);
 }
 
 export function withDelta(bars: Bar[]): Bar[] {
@@ -59,7 +63,60 @@ export function rthBars(bars: Bar[], kind: MarketKind): Bar[] {
   });
 }
 
-function rangeOf(bars: Bar[]): RangeLevel {
+export function inNyWindow(minutes: number, startMin: number, endMin: number): boolean {
+  if (startMin === endMin) return false;
+  if (startMin < endMin) return minutes >= startMin && minutes < endMin;
+  return minutes >= startMin || minutes < endMin;
+}
+
+export function barsInClock(bars: Bar[], startMin: number, endMin: number): Bar[] {
+  return bars.filter((b) => inNyWindow(nyParts(b.time).minutes, startMin, endMin));
+}
+
+/** Median bar length in minutes — used so key times still print on 15m/1H tape. */
+export function typicalBarMinutes(bars: Bar[]): number {
+  if (bars.length < 2) return 5;
+  const samples: number[] = [];
+  for (let i = 1; i < Math.min(bars.length, 16); i++) {
+    const d = Math.round((bars[i]!.time - bars[i - 1]!.time) / 60);
+    if (d > 0 && d <= 1440) samples.push(d);
+  }
+  if (!samples.length) return 5;
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(samples.length / 2)]!;
+}
+
+/** Bar whose open is at `minutes`, or the HTF bar that contains that clock. */
+export function barCoveringClock(bars: Bar[], minutes: number): Bar | undefined {
+  const exact = bars.find((b) => nyParts(b.time).minutes === minutes);
+  if (exact) return exact;
+  const span = typicalBarMinutes(bars);
+  for (const b of bars) {
+    const start = nyParts(b.time).minutes;
+    const end = start + span;
+    if (end <= 24 * 60) {
+      if (minutes >= start && minutes < end) return b;
+    } else if (minutes >= start || minutes < end - 24 * 60) {
+      return b;
+    }
+  }
+  return bars.find((b) => nyParts(b.time).minutes > minutes);
+}
+
+export type SessionHours = "all" | "rth" | "asia" | "london" | "nyam";
+
+export function filterSessionHours(bars: Bar[], hours: SessionHours): Bar[] {
+  if (hours === "all" || !bars.length) return bars;
+  return bars.filter((b) => {
+    const m = nyParts(b.time).minutes;
+    if (hours === "rth") return m >= 9 * 60 + 30 && m < 16 * 60;
+    if (hours === "london") return m >= 2 * 60 && m < 8 * 60;
+    if (hours === "nyam") return m >= 7 * 60 && m < 11 * 60;
+    return m >= 20 * 60 || m < 2 * 60;
+  });
+}
+
+export function rangeOf(bars: Bar[]): RangeLevel {
   const high = Math.max(...bars.map((b) => b.high));
   const low = Math.min(...bars.map((b) => b.low));
   return { high, low, mid: (high + low) / 2, size: high - low };
@@ -81,23 +138,24 @@ function classifyBreak(
   let maxExt = 0;
   const size = Math.max(range.size, 1e-9);
   for (const b of after) {
-    if (b.high > range.high) {
-      if (!up && !down) {
+    const brokeHigh = b.high > range.high;
+    const brokeLow = b.low < range.low;
+    if (brokeHigh && !up) {
+      if (!first) {
         first = "up";
         time = b.time;
       }
       up = true;
-      maxExt = Math.max(maxExt, (b.high - range.high) / size);
     }
-    if (b.low < range.low) {
-      if (!up && !down) {
+    if (brokeLow && !down) {
+      if (!first) {
         first = "down";
         time = b.time;
       }
-      if (!down && up && time === null) time = b.time;
       down = true;
-      maxExt = Math.max(maxExt, (range.low - b.low) / size);
     }
+    if (brokeHigh) maxExt = Math.max(maxExt, (b.high - range.high) / size);
+    if (brokeLow) maxExt = Math.max(maxExt, (range.low - b.low) / size);
   }
   const kind: BreakKind = up && down ? "both" : up ? "up" : down ? "down" : "none";
   return { kind, time, first, extension: maxExt };
@@ -137,6 +195,47 @@ function windowFrom(bars: Bar[], minutes: number): Bar[] {
   return bars.filter((b) => b.time < start + minutes * 60);
 }
 
+function dummySession(input: {
+  symbol: string;
+  date: string;
+  bars: Bar[];
+  prevClose: number;
+  barMinutes?: number;
+}): SessionDay {
+  const px = input.prevClose || input.bars.at(-1)?.close || 0;
+  const dummy: RangeLevel = { high: px, low: px, mid: px, size: 0 };
+  return {
+    symbol: input.symbol,
+    date: input.date,
+    weekday: 0,
+    bars: input.bars,
+    barMinutes: input.barMinutes ?? 5,
+    prevClose: input.prevClose,
+    open: px,
+    close: px,
+    high: px,
+    low: px,
+    gap: 0,
+    gapPct: 0,
+    gapFilled: false,
+    gapFillTime: null,
+    orb: dummy,
+    orbBreak: "none",
+    orbBreakTime: null,
+    orbExtension: 0,
+    ib: dummy,
+    ibBreak: "none",
+    ibBreakTime: null,
+    ibExtension: 0,
+    ibFirstBreak: null,
+    occ: "up",
+    occContinued: false,
+    range: 0,
+    vwap: px,
+    poc: px,
+  };
+}
+
 export function sessionFromBars(input: {
   symbol: string;
   date: string;
@@ -147,48 +246,37 @@ export function sessionFromBars(input: {
   const spec = getSymbol(input.symbol);
   const all = withDelta(input.bars.filter((b) => Number.isFinite(b.close)));
   const rth = rthBars(all, spec.kind);
-  const work = rth.length >= 4 ? rth : all;
-  const first = work[0];
-  const last = work[work.length - 1];
-  if (!first || !last) {
-    const px = input.prevClose || 0;
-    const dummy: RangeLevel = { high: px, low: px, mid: px, size: 0 };
+  const work = rth.length >= 4 ? rth : [];
+  if (!work.length) {
+    const empty = dummySession({ ...input, bars: all });
+    if (!all.length) return empty;
+    const first = all[0]!;
+    const last = all[all.length - 1]!;
     return {
-      symbol: input.symbol,
-      date: input.date,
-      weekday: 0,
-      bars: all,
-      barMinutes: input.barMinutes ?? 5,
-      prevClose: input.prevClose,
-      open: px,
-      close: px,
-      high: px,
-      low: px,
-      gap: 0,
-      gapPct: 0,
-      gapFilled: false,
-      gapFillTime: null,
-      orb: dummy,
-      orbBreak: "none",
-      orbBreakTime: null,
-      orbExtension: 0,
-      ib: dummy,
-      ibBreak: "none",
-      ibBreakTime: null,
-      ibExtension: 0,
-      ibFirstBreak: null,
-      occ: "up",
-      occContinued: false,
-      range: 0,
-      vwap: px,
-      poc: px,
+      ...empty,
+      weekday: nyParts(first.time).weekday,
+      open: first.open,
+      close: last.close,
+      high: Math.max(...all.map((b) => b.high)),
+      low: Math.min(...all.map((b) => b.low)),
+      vwap: vwapOf(all),
+      poc: pocOf(all, spec.tick),
+      range: Math.max(...all.map((b) => b.high)) - Math.min(...all.map((b) => b.low)),
     };
   }
 
-  const orbBars = windowFrom(work, 15);
-  const ibBars = windowFrom(work, 60);
-  const orb = rangeOf(orbBars.length ? orbBars : work.slice(0, 3));
-  const ib = rangeOf(ibBars.length ? ibBars : work.slice(0, 12));
+  const first = work[0]!;
+  const last = work[work.length - 1]!;
+  const barMinutes = input.barMinutes ?? typicalBarMinutes(work);
+  const cash = usesCashOpen(spec.kind);
+  const rthOpen = 9 * 60 + 30;
+  const orbBars = cash ? barsInClock(work, rthOpen, rthOpen + 15) : windowFrom(work, 15);
+  const ibBars = cash ? barsInClock(work, rthOpen, rthOpen + 60) : windowFrom(work, 60);
+  const orbFallback = Math.max(1, Math.round(15 / Math.max(1, barMinutes)));
+  const ibFallback = Math.max(1, Math.round(60 / Math.max(1, barMinutes)));
+  const ibClose = (ibBars.at(-1) ?? last).close;
+  const orb = rangeOf(orbBars.length ? orbBars : work.slice(0, orbFallback));
+  const ib = rangeOf(ibBars.length ? ibBars : work.slice(0, ibFallback));
   const afterOrb = work.filter((b) => b.time >= (orbBars.at(-1)?.time ?? first.time) + 1);
   const afterIb = work.filter((b) => b.time >= (ibBars.at(-1)?.time ?? first.time) + 1);
   const orbB = classifyBreak(afterOrb, orb);
@@ -215,8 +303,8 @@ export function sessionFromBars(input: {
     }
   }
 
-  const occ: "up" | "down" = ib.mid >= first.open ? "up" : "down";
-  const occContinued = occ === "up" ? last.close >= ib.high : last.close <= ib.low;
+  const occ: "up" | "down" = ibClose >= first.open ? "up" : "down";
+  const occContinued = occ === "up" ? last.close >= ibClose : last.close <= ibClose;
   const prev = Math.max(input.prevClose, 1e-9);
 
   return {
@@ -224,7 +312,7 @@ export function sessionFromBars(input: {
     date: input.date,
     weekday: nyParts(first.time).weekday,
     bars: all,
-    barMinutes: input.barMinutes ?? 5,
+    barMinutes,
     prevClose: input.prevClose,
     open: first.open,
     close: last.close,
@@ -272,7 +360,7 @@ export function sessionsFromIntraday(symbolId: string, bars: Bar[]): SessionDay[
     const older = dates[i + 1];
     const prevClose = older ? (byDate.get(older)!.at(-1)?.close ?? dayBars[0]!.open) : dayBars[0]!.open;
     try {
-      out.push(sessionFromBars({ symbol: symbolId, date, bars: dayBars, prevClose, barMinutes: 5 }));
+      out.push(sessionFromBars({ symbol: symbolId, date, bars: dayBars, prevClose, barMinutes: typicalBarMinutes(dayBars) }));
     } catch {
       /* skip empty days */
     }
@@ -285,7 +373,7 @@ export function lastSessionBars(bars: Bar[], symbolId = "NQ"): Bar[] {
   const last = bars[bars.length - 1]!;
   const key = sessionKey(symbolId, last);
   const slice = bars.filter((b) => sessionKey(symbolId, b) === key);
-  return slice.length >= 8 ? slice : bars.slice(-240);
+  return slice.length >= 4 ? slice : bars.slice(-240);
 }
 
 export function capBars(bars: Bar[], max = 480): Bar[] {
@@ -331,4 +419,51 @@ function fromSlice(slice: Bar[]): Bar {
     buyVolume: slice.reduce((s, b) => s + b.buyVolume, 0),
     sellVolume: slice.reduce((s, b) => s + b.sellVolume, 0),
   };
+}
+
+/** Daily OHLC → session stats for gap / ADR / inside-day. OR/IB breaks are not meaningful here. */
+export function sessionsFromDaily(symbolId: string, bars: Bar[]): SessionDay[] {
+  const out: SessionDay[] = [];
+  for (let i = bars.length - 1; i >= 1; i--) {
+    const b = bars[i]!;
+    const prev = bars[i - 1]!;
+    const parts = nyParts(b.time);
+    const high = b.high;
+    const low = b.low;
+    const box: RangeLevel = { high, low, mid: (high + low) / 2, size: high - low };
+    const gap = b.open - prev.close;
+    const gapFilled =
+      Math.abs(gap) < 1e-9 || (gap >= 0 && b.low <= prev.close) || (gap < 0 && b.high >= prev.close);
+    out.push({
+      symbol: symbolId,
+      date: parts.date,
+      weekday: parts.weekday,
+      bars: [b],
+      barMinutes: 390,
+      prevClose: prev.close,
+      open: b.open,
+      close: b.close,
+      high,
+      low,
+      gap,
+      gapPct: prev.close ? gap / prev.close : 0,
+      gapFilled,
+      gapFillTime: gapFilled ? b.time : null,
+      orb: box,
+      orbBreak: "none",
+      orbBreakTime: null,
+      orbExtension: 0,
+      ib: box,
+      ibBreak: "none",
+      ibBreakTime: null,
+      ibExtension: 0,
+      ibFirstBreak: null,
+      occ: b.close >= b.open ? "up" : "down",
+      occContinued: true,
+      range: high - low,
+      vwap: (high + low + b.close) / 3,
+      poc: b.close,
+    });
+  }
+  return out;
 }

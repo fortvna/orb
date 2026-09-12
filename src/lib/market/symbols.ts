@@ -212,8 +212,37 @@ export const SYMBOL_MAP = Object.fromEntries(SYMBOLS.map((s) => [s.id, s])) as R
   SymbolSpec
 >;
 
+const ALIASES: Record<string, string> = {
+  "NQ=F": "NQ",
+  MNQ: "NQ",
+  "MNQ=F": "NQ",
+  "ES=F": "ES",
+  MES: "ES",
+  "MES=F": "ES",
+  "YM=F": "YM",
+  MYM: "YM",
+  "MYM=F": "YM",
+  "CL=F": "CL",
+  "GC=F": "GC",
+  BTC: "BTCUSD",
+  "BTC-USD": "BTCUSD",
+  "EURUSD=X": "EURUSD",
+  "GBPUSD=X": "GBPUSD",
+};
+
+export function resolveSymbolId(raw: string): string | null {
+  const id = raw.trim().toUpperCase();
+  if (!id) return null;
+  if (SYMBOL_MAP[id]) return id;
+  if (ALIASES[id]) return ALIASES[id]!;
+  const root = id.replace(/[FGHJKMNQUVXZ]\d{1,2}$/i, "");
+  if (root !== id && SYMBOL_MAP[root]) return root;
+  return null;
+}
+
 export function getSymbol(id: string): SymbolSpec {
-  return SYMBOL_MAP[id] ?? SYMBOLS[0]!;
+  const resolved = resolveSymbolId(id);
+  return (resolved ? SYMBOL_MAP[resolved] : null) ?? SYMBOLS[0]!;
 }
 
 export const WATCHLIST_DEFAULT = ["ES", "NQ", "CL", "GC", "NVDA", "BTCUSD"];
