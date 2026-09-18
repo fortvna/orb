@@ -145,6 +145,7 @@ export function DeskSettings({ compact = false }: { compact?: boolean }) {
             <p className="mt-4 text-[11px] uppercase tracking-[0.14em] text-subtle">Limits</p>
             <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
               <li>Tape is Yahoo Finance — delayed quotes. 5m history ~60 Globex days; 1m ~5 days. No broker, no tick tape.</li>
+              <li>Upload a 1m JSON/CSV pack on Playbooks / Replay / Reports for London hours Yahoo often lacks. Cap 80k bars. Pack ≠ Yahoo ≠ Themis.</li>
               <li>Volume / delta is a close-in-bar split from OHLC — not order flow.</li>
               <li>Futures fees $4.08 round-turn per contract (estimate). $1 other.</li>
               <li>Journal is CSV/JSON you import. No Tradovate, Rithmic, or TT.</li>

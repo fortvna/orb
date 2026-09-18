@@ -18,7 +18,7 @@ function AnalyticsPage() {
   const evaluations = useOrb((s) => s.evaluations);
   const customReports = useOrb((s) => s.customReports);
   const mock = useOrb((s) => Boolean(s.useMockData && s.mockDay));
-  const { sessions, daily, live, loading, error } = useSessions("NQ", 40);
+  const { sessions, daily, live, loading, error, source: tapeSource } = useSessions("NQ", 40);
   const evaluated = evaluations.flatMap((e) => e.trades);
   const taken = takenTrades(trades, mock);
   const perf = computePerformance(taken);
@@ -66,7 +66,7 @@ function AnalyticsPage() {
             <div className="text-xs text-muted">
               {perf.trades} taken fills
               {evalPerf.trades ? ` · ${evalPerf.trades} evaluated (not in journal P&L)` : ""}
-              {live ? " · Yahoo NQ sessions" : ""}
+              {tapeSource === "pack" ? " · uploaded 1m pack" : live ? " · Yahoo NQ sessions" : ""}
             </div>
           </div>
         </div>

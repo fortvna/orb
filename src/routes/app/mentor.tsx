@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { NativeSelect, Textarea } from "@/components/ui/input";
 import { askMentor } from "@/lib/mentor";
 import { evaluateLive } from "@/lib/market/use-feed";
+import { canMarkValidated } from "@/lib/market/types";
 import { hydratePlaybook, inferKind } from "@/lib/market/playbook-parse";
 import { fmtClock } from "@/lib/market/clock";
 import { closedTrades, computePerformance, takenTrades } from "@/lib/market/stats";
@@ -87,15 +88,13 @@ function MentorPage() {
     try {
       const { evaluation } = await evaluateLive(next, 40);
       saveEvaluation(evaluation);
-      if (evaluation.summary.source === "live" && evaluation.summary.sessions > 0) {
+      if (canMarkValidated(evaluation.summary)) {
         updatePlaybook(next.id, { status: "validated", validated: true, evaluation: evaluation.summary });
         setDraft({ ...next, status: "validated", validated: true, evaluation: evaluation.summary });
-      } else if (evaluation.summary.source === "model" || evaluation.summary.sessions > 0) {
-        setErr(
-          `That run used ${evaluation.summary.source ?? "model"} tape — book stays unvalidated until a live window prints.`,
-        );
+      } else if (evaluation.summary.source === "model") {
+        setErr("That run used model tape — book stays unvalidated until live Yahoo or an uploaded 1m pack prints.");
       } else {
-        setErr("No sessions in this window (source: empty). Wait for the live tape, or turn on Model tape for today — model cannot validate.");
+        setErr("No sessions in this window (source: empty). Upload a 1m pack, wait for Yahoo, or turn on Model tape — model cannot validate.");
       }
     } catch {
       setErr("Could not evaluate on the live tape.");

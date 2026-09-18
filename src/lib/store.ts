@@ -15,6 +15,9 @@ import type {
   Trade,
 } from "./market/types";
 import { canMarkValidated } from "./market/types";
+import type { TapePack, TapePackMeta } from "./market/tape-pack";
+import { packStorageId, tapePackMetaFrom } from "./market/tape-pack";
+import { clearAllTapePacks, deleteTapePack, hydrateTapeCache, listStoredTapePacks, writeTapePack } from "./market/tape-cache";
 
 export const EMPTY_DRAWINGS: Drawing[] = [];
 
@@ -33,6 +36,7 @@ type OrbState = {
   notes: Record<string, string>;
   drawings: Record<string, Drawing[]>;
   indicators: IndicatorId[];
+  tapePacks: TapePackMeta[];
   hydrate: () => void;
   setMockData: (on: boolean) => void;
   addTrade: (trade: Trade) => void;
@@ -57,6 +61,8 @@ type OrbState = {
   toggleIndicator: (id: IndicatorId) => void;
   setDrawings: (key: string, drawings: Drawing[]) => void;
   setNote: (id: string, note: string) => void;
+  upsertTapePack: (pack: TapePack) => { persisted: boolean; warning?: string };
+  removeTapePack: (id: string) => void;
   clearLedger: () => void;
   resetDemo: () => void;
   importDesk: (snap: {
@@ -183,8 +189,21 @@ export const useOrb = create<OrbState>()(
       notes: {},
       drawings: {},
       indicators: DEFAULT_INDICATORS,
+      tapePacks: [],
       hydrate: () => {
         if (get().ready) return;
+        hydrateTapeCache();
+        const persistedMeta = get().tapePacks ?? [];
+        const metaById = new Map(persistedMeta.map((p) => [p.id, p]));
+        const tapePacks: TapePackMeta[] = listStoredTapePacks()
+          .filter((pack) => pack.bars.length > 0)
+          .map((pack) => {
+            const id = packStorageId(pack.symbol);
+            const prev = metaById.get(id);
+            return prev && prev.barCount === pack.bars.length
+              ? prev
+              : tapePackMetaFrom(pack, id, prev?.uploadedAt ?? Date.now(), true);
+          });
         const playbooks = mergeDeskBooks(get().playbooks.length ? get().playbooks : PLAYBOOKS);
         const levels: IndicatorId[] = ["orH", "orL", "ibH", "ibL"];
         const indicators = levels.some((id) => get().indicators.includes(id))
@@ -212,6 +231,7 @@ export const useOrb = create<OrbState>()(
           useMockData: mock.useMockData,
           mockDay: mock.mockDay,
           propStartedAt: get().propStartedAt ?? null,
+          tapePacks,
           ledgerClean: true,
           ready: true,
         });
@@ -342,6 +362,17 @@ export const useOrb = create<OrbState>()(
       setDrawings: (key, drawings) =>
         set({ drawings: { ...get().drawings, [key]: drawings } }),
       setNote: (id, note) => set({ notes: { ...get().notes, [id]: note } }),
+      upsertTapePack: (pack) => {
+        const written = writeTapePack(pack);
+        set({
+          tapePacks: [written.meta, ...get().tapePacks.filter((p) => p.symbol !== pack.symbol && p.id !== written.id)],
+        });
+        return { persisted: written.persisted, warning: written.warning };
+      },
+      removeTapePack: (id) => {
+        deleteTapePack(id);
+        set({ tapePacks: get().tapePacks.filter((p) => p.id !== id) });
+      },
       clearLedger: () =>
         set({
           trades: isMockOn() ? buildSeedTradesForDay(nyToday()) : [],
@@ -355,6 +386,7 @@ export const useOrb = create<OrbState>()(
         }),
       resetDemo: () => {
         syncMock(false, null);
+        clearAllTapePacks();
         set({
           trades: [],
           playbooks: PLAYBOOKS,
@@ -366,6 +398,7 @@ export const useOrb = create<OrbState>()(
           notes: {},
           drawings: {},
           indicators: DEFAULT_INDICATORS,
+          tapePacks: [],
           useMockData: false,
           mockDay: null,
           ledgerClean: true,
@@ -415,6 +448,7 @@ export const useOrb = create<OrbState>()(
         notes: s.notes,
         drawings: s.drawings,
         indicators: s.indicators,
+        tapePacks: s.tapePacks,
       }),
     },
   ),

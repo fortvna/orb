@@ -485,15 +485,20 @@ export function evaluatePlaybook(
   lookback = 40,
   liveSessions?: SessionDay[],
   allowMock = false,
+  tapeKind: "live" | "pack" = "live",
 ): PlaybookEvaluation {
   const symbol = playbook.symbol || "NQ";
   const mock = allowMock || isMockOn();
-  const sessions = liveSessions?.length
+  const provided = liveSessions !== undefined;
+  const sessions = provided
     ? liveSessions.slice(0, lookback)
     : mock
       ? getSessions(symbol, listTradingDays(lookback + 1).slice(1), 5)
       : [];
-  if (!sessions.length) return emptyEval(playbook, symbol, mock ? "model" : "empty");
+  if (!sessions.length) {
+    const emptySource = !provided && mock ? "model" : "empty";
+    return emptyEval(playbook, symbol, emptySource);
+  }
 
   const trades: Trade[] = [];
   for (let i = 0; i < sessions.length; i++) {
@@ -514,7 +519,7 @@ export function evaluatePlaybook(
     profitFactor: perf.profitFactor,
     net: perf.net,
     avgR: perf.avgR,
-    source: liveSessions?.length ? "live" : "model",
+    source: provided ? tapeKind : "model",
   };
   return {
     id: `eval-${playbook.id}-${summary.at}`,

@@ -41,10 +41,14 @@ describe("Metis MD → Playbook", () => {
     };
     const empty: PlaybookEvalSummary = { ...model, sessions: 0, trades: 0, source: "empty" };
     const live: PlaybookEvalSummary = { ...model, source: "live" };
+    const pack: PlaybookEvalSummary = { ...model, source: "pack" };
+    const packEmpty: PlaybookEvalSummary = { ...empty, source: "pack" };
 
     assert.equal(canMarkValidated(model), false);
     assert.equal(canMarkValidated(empty), false);
     assert.equal(canMarkValidated(live), true);
+    assert.equal(canMarkValidated(pack), true);
+    assert.equal(canMarkValidated(packEmpty), false);
 
     const blocked = hydratePlaybook({
       id: "pb-x",
@@ -74,5 +78,15 @@ describe("Metis MD → Playbook", () => {
     });
     assert.equal(ok.validated, true);
     assert.equal(ok.status, "validated");
+
+    const okPack = hydratePlaybook({
+      id: "pb-pack",
+      name: "Pack",
+      evaluation: pack,
+      validated: true,
+      status: "validated",
+    });
+    assert.equal(okPack.validated, true);
+    assert.equal(okPack.status, "validated");
   });
 });

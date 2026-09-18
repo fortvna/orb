@@ -7,6 +7,7 @@ import { Panel } from "@/components/stat";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, NativeSelect, Textarea } from "@/components/ui/input";
+import { TapePackPanel } from "@/components/tape-pack-panel";
 import { evaluateLive } from "@/lib/market/use-feed";
 import { hydratePlaybook, parsePlaybooks, PLAYBOOK_TEMPLATE } from "@/lib/market/playbook-parse";
 import { KIT_CHOICES, kitForKind, kitLabel } from "@/lib/market/playbook-kit";
@@ -83,10 +84,11 @@ function PlaybooksPage() {
     try {
       const { evaluation, live } = await evaluateLive(pb, 40);
       saveEvaluation(evaluation);
+      const src = evaluation.summary.source ?? (live ? "live" : "model");
       setNotice(
         evaluation.summary.source === "empty" || !evaluation.summary.sessions
-          ? `${pb.name}: no live 5m sessions in this window (source: empty). Try again once the tape loads, or turn on Model tape for today — model cannot validate.`
-          : `${pb.name}: ${evaluation.summary.trades} fills / ${evaluation.summary.sessions} ${evaluation.summary.source ?? (live ? "live" : "model")} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}`,
+          ? `${pb.name}: no sessions (source: empty). Upload a 1m pack for ${pb.symbol}, wait for Yahoo, or turn on Model tape for today — model cannot validate.`
+          : `${pb.name}: ${evaluation.summary.trades} fills / ${evaluation.summary.sessions} ${src} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}`,
       );
     } catch {
       setNotice("Could not evaluate on the live tape.");
@@ -119,6 +121,7 @@ function PlaybooksPage() {
 
       <div className="space-y-4 p-4 sm:p-6">
         {notice ? <p className="text-sm text-muted">{notice}</p> : null}
+        <TapePackPanel />
 
         {showImport ? (
           <Panel className="p-5">
@@ -126,7 +129,7 @@ function PlaybooksPage() {
             <p className="mt-1 text-sm text-muted">
               Drop JSON, CSV, Markdown, or a Metis <span className="font-mono">strt-*.md</span> card
               (## Idea / Setup / Entry / Exit / Invalidation, or Setup / Trigger / Stop). Origin is
-              stamped imported; source URL lands in mentor notes. Yahoo tape ≠ Themis ask.
+              stamped imported; source URL lands in mentor notes. Yahoo tape ≠ uploaded pack ≠ Themis ask.
             </p>
             <input
               ref={fileRef}

@@ -111,16 +111,23 @@ export type PlaybookEvalSummary = {
   profitFactor: number;
   net: number;
   avgR: number;
-  source?: "live" | "model" | "empty";
+  source?: "pack" | "live" | "model" | "empty";
 };
 
-/** Live tape only. Model / empty / missing source must never stamp validated. */
+export type EvalTapeSource = NonNullable<PlaybookEvalSummary["source"]>;
+
+/**
+ * Real tape only: Yahoo `live` or user-uploaded `pack`.
+ * Model / empty / missing source must never stamp validated.
+ * Pack is user-provided OHLC (Databento/CSV/manual), not generated model tape.
+ */
 export function canMarkValidated(summary?: PlaybookEvalSummary | null): boolean {
-  return summary?.source === "live" && (summary.sessions ?? 0) > 0;
+  return (summary?.source === "live" || summary?.source === "pack") && (summary.sessions ?? 0) > 0;
 }
 
 export function evalSourceLabel(source?: PlaybookEvalSummary["source"]): string {
   if (source === "live") return "live";
+  if (source === "pack") return "uploaded pack";
   if (source === "model") return "model tape";
   if (source === "empty") return "empty";
   return "unevaluated";

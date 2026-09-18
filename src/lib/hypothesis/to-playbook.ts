@@ -55,7 +55,7 @@ export function playbookFromHypothesis(h: Hypothesis): Playbook {
     `Imported from Metis ${h.metis_slug}.`,
     sourceLine,
     `Grounding ${h.grounding_version}.`,
-    "Yahoo session tape ≠ Themis ask; execution_ready false.",
+    "Yahoo session tape ≠ uploaded 1m pack ≠ Themis ask; execution_ready false.",
     locked?.mentorNotes ?? "",
   ]
     .filter(Boolean)

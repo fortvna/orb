@@ -7,7 +7,7 @@ Locked IDs (see `id-map.ts`):
 - `strt-fortvna-lonny-ib` ↔ Orb `pb-ib` ↔ Crucible `lonny-ib`
 - `strt-santana-nq-sma25-orb` ↔ Crucible `santana-sma25-orb`
 
-Yahoo session tape ≠ Themis ask. `execution_ready` is always false on Orb. QQQ is not NQ; SPY is not ES.
+Yahoo session tape ≠ uploaded 1m pack ≠ Themis ask. `execution_ready` is always false on Orb. QQQ is not NQ; SPY is not ES.
 
 ## LONNY fill model (Grounding-v1 §1)
 
@@ -24,6 +24,7 @@ Implemented in `src/lib/market/evaluate.ts` for the LONNY sleeve:
 
 - Yahoo 5m (typical eval tape) is not the 1m Grounding freeze. Intra-bar order of high/low is unknown except the next-open case above.
 - Yahoo 1m history is only ~5 Globex days; 5m ~60. Overnight London is present on Globex futures (`includePrePost`) but absent on RTH-only slices — those days produce no LONNY fill.
+- **Uploaded 1m pack** (`fortvna.tape.v0`): user OHLC (Databento/CSV/manual) preferred over Yahoo when present for that symbol. Eval source is `pack` (validatable; still not Themis). Empty pack → empty eval; bars are never invented. See `src/lib/market/tape-pack.md`.
 - Limit-on-wick fills assume the 25% level was tradable; we do not invent a queue or slippage model.
 - Same-bar break + retrace is not filled (we wait for the next bar).
 - Santana SMA25 engulf is imported as a card only; the eval engine does not run that trigger.

@@ -15,6 +15,7 @@ import {
   REPORT_LIST,
   type ReportView,
 } from "@/lib/market/reports";
+import { TapePackPanel } from "@/components/tape-pack-panel";
 import { useSessions } from "@/lib/market/use-feed";
 import { useOrb } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -36,7 +37,7 @@ function ReportsPage() {
   const [lookback, setLookback] = useState(20);
   const [selected, setSelected] = useState(search.report ?? "orb");
   const [showCustom, setShowCustom] = useState(false);
-  const { sessions, daily, available, live, loading, error } = useSessions(symbol, lookback);
+  const { sessions, daily, available, live, loading, error, source: tapeSource } = useSessions(symbol, lookback);
 
   useEffect(() => {
     if (search.report) setSelected(search.report);
@@ -90,11 +91,13 @@ function ReportsPage() {
           <DeskChain current="/app/reports" />
           <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted">
-            {live
-              ? `${sessions.length}×5m${available > sessions.length ? ` of ${available}` : ""}${daily.length ? ` · ${daily.length} daily` : ""} · Yahoo ~60d cap`
-              : loading
-                ? "Loading tape"
-                : "Waiting on tape"}
+            {tapeSource === "pack"
+              ? `${sessions.length}×1m pack${available > sessions.length ? ` of ${available}` : ""} · uploaded tape ≠ Yahoo`
+              : live
+                ? `${sessions.length}×5m${available > sessions.length ? ` of ${available}` : ""}${daily.length ? ` · ${daily.length} daily` : ""} · Yahoo ~60d cap`
+                : loading
+                  ? "Loading tape"
+                  : "Waiting on tape"}
           </span>
           <SymbolSelect value={symbol} onChange={setSymbol} />
           <NativeSelect value={lookback} onChange={(e) => setLookback(Number(e.target.value))}>
@@ -110,7 +113,9 @@ function ReportsPage() {
         </div>
       </PageHead>
 
-      <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[16rem_1fr]">
+      <div className="space-y-4 p-4 sm:p-6">
+        <TapePackPanel symbol={symbol} compact />
+      <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
         <div className="space-y-4">
           <Panel className="h-fit p-2">
             <p className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-[0.14em] text-subtle">Session</p>
@@ -170,13 +175,16 @@ function ReportsPage() {
           ) : null}
           {!loading && !sessions.length && view.source === "session" ? (
             <p className="text-sm text-muted">
-              No live 5m sessions in this window. Wait for the tape, or turn on Model tape for today in Settings.
+              {tapeSource === "pack"
+                ? "Uploaded pack has no sessions for this symbol. Empty pack is not filled in."
+                : "No live 5m sessions in this window. Upload a 1m pack, wait for Yahoo, or turn on Model tape for today in Settings."}
             </p>
           ) : null}
           {!loading && sessions.length > 0 && sessions.length < lookback && view.source === "session" ? (
             <p className="text-sm text-muted">
-              Yahoo 5m history returned {sessions.length} of {lookback} sessions
-              {available ? ` (${available} packed on the tape; cap is ~60 Globex days)` : " (tape is thinner than the lookback)"}.
+              {tapeSource === "pack"
+                ? `Uploaded 1m pack returned ${sessions.length} of ${lookback} sessions.`
+                : `Yahoo 5m history returned ${sessions.length} of ${lookback} sessions${available ? ` (${available} packed on the tape; cap is ~60 Globex days)` : " (tape is thinner than the lookback)"}.`}
             </p>
           ) : null}
           {view.source === "playbook" && !playbooks.find((p) => `pb:${p.id}` === selected)?.evaluation ? (
@@ -266,6 +274,7 @@ function ReportsPage() {
             </dl>
           </Panel>
         </div>
+      </div>
       </div>
     </div>
   );

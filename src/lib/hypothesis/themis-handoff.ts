@@ -55,6 +55,7 @@ export function themisHandoffEnglish(h: Hypothesis): string {
     "",
     "execution_ready: false",
     "Yahoo session tape ≠ Themis ask.",
+    "Uploaded 1m pack ≠ Themis ask.",
   ];
 
   if (needsHuman) {

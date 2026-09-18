@@ -73,6 +73,7 @@ describe("fortvna.hypothesis.v0", () => {
     const english = themisHandoffEnglish(h);
     assert.match(english, /execution_ready: false/);
     assert.match(english, /Yahoo session tape ≠ Themis ask/);
+    assert.match(english, /Uploaded 1m pack ≠ Themis ask/);
     assert.match(english, /needs_human/);
     assert.match(english, /series mismatch/);
     assert.match(english, /Do not relabel QQQ as NQ or SPY as ES/);

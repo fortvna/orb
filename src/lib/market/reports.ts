@@ -98,7 +98,7 @@ function emptyReport(report: ReportId): ReportView {
     kicker: meta.kicker,
     source: "session",
     summary:
-      "No live sessions in this window. Pull Yahoo from Charts, or turn on Model tape for today in Desk settings.",
+      "No live sessions in this window. Upload a 1m pack, pull Yahoo from Charts, or turn on Model tape for today in Desk settings.",
     headline: [
       { label: "Sample", value: "0", hint: "sessions" },
       { label: "Rate", value: "—", hint: "waiting" },

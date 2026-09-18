@@ -5,6 +5,9 @@ import { nyToday } from "./clock";
 import { barsOnDate, resampleBars, sessionsFromIntraday } from "./session";
 import { isMockOn } from "../mock";
 import { useOrb } from "../store";
+import { evaluatePlaybook } from "./evaluate";
+import { packBarsToMarket, sessionsFromTapePack } from "./tape-pack";
+import { getTapePackForSymbol } from "./tape-cache";
 import type { Bar, ChartFeed, FeedInterval, FeedRange, Playbook, PlaybookEvaluation, Quote, SessionDay } from "./types";
 
 function mergeQuotes(prev: Record<string, Quote>, next: Record<string, Quote>) {
@@ -124,12 +127,15 @@ export function useChart(id: string | null, interval: FeedInterval, range: FeedR
 }
 
 export function useSessions(id: string, days = 40) {
+  const packRev = useOrb((s) => s.tapePacks.find((p) => p.symbol === id)?.uploadedAt ?? 0);
+  const packCount = useOrb((s) => s.tapePacks.find((p) => p.symbol === id)?.barCount ?? 0);
   const [sessions, setSessions] = useState<SessionDay[]>([]);
   const [daily, setDaily] = useState<SessionDay[]>([]);
   const [available, setAvailable] = useState(0);
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [source, setSource] = useState<"pack" | "live" | "empty">("empty");
 
   useEffect(() => {
     let stop = false;
@@ -139,6 +145,23 @@ export function useSessions(id: string, days = 40) {
     setSessions([]);
     setDaily([]);
     setAvailable(0);
+    setSource("empty");
+
+    const pack = getTapePackForSymbol(id);
+    if (pack) {
+      const list = sessionsFromTapePack(pack);
+      const sliced = list.slice(0, days);
+      setSessions(sliced);
+      setDaily(sliced);
+      setAvailable(list.length);
+      setLive(list.length > 0);
+      setSource(list.length ? "pack" : "empty");
+      setLoading(false);
+      return () => {
+        stop = true;
+      };
+    }
+
     void fetchSessions({ data: { id, days } })
       .then((res) => {
         if (stop) return;
@@ -147,6 +170,7 @@ export function useSessions(id: string, days = 40) {
           setDaily(res.daily ?? []);
           setAvailable(res.available);
           setLive(true);
+          setSource("live");
           setError(null);
         } else {
           setLive(false);
@@ -164,9 +188,9 @@ export function useSessions(id: string, days = 40) {
     return () => {
       stop = true;
     };
-  }, [id, days]);
+  }, [id, days, packRev, packCount]);
 
-  return { sessions, daily, available, live, error, loading };
+  return { sessions, daily, available, live, error, loading, source };
 }
 
 export function useTapeHistory(id: string) {
@@ -182,27 +206,40 @@ export function useTapeHistory(id: string) {
   return { chart, sessions, dates, barsFor, live, error, loading };
 }
 
-export type TapeSource = "live" | "model" | "empty";
+export type TapeSource = "live" | "pack" | "model" | "empty";
 
 export function useReplayTape(id: string) {
-  const recent = useChart(id, "5m", "5d", 60_000);
-  const month = useChart(id, "5m", "1mo", 60_000);
-  const m1 = useChart(id, "1m", "5d", 60_000);
+  const packRev = useOrb((s) => s.tapePacks.find((p) => p.symbol === id)?.uploadedAt ?? 0);
+  const packCount = useOrb((s) => s.tapePacks.find((p) => p.symbol === id)?.barCount ?? 0);
+  const pack = useMemo(() => getTapePackForSymbol(id), [id, packRev, packCount]);
+  const yahooId = pack && pack.bars.length ? null : id;
+  const recent = useChart(yahooId, "5m", "5d", 60_000);
+  const month = useChart(yahooId, "5m", "1mo", 60_000);
+  const m1 = useChart(yahooId, "1m", "5d", 60_000);
   const mock = useOrb((s) => Boolean(s.useMockData && s.mockDay));
+
+  const packBars = useMemo(() => (pack ? packBarsToMarket(pack) : []), [pack]);
+  const packSessions = useMemo(() => (pack ? sessionsFromTapePack(pack) : []), [pack]);
+
   const sessions = useMemo(() => {
+    if (pack) return packSessions;
     const dense = recent.chart ? sessionsFromIntraday(id, recent.chart.bars) : [];
     const wide = month.chart ? sessionsFromIntraday(id, month.chart.bars) : [];
     if (!wide.length) return dense;
     const seen = new Set(dense.map((s) => s.date));
     return [...dense, ...wide.filter((s) => !seen.has(s.date))];
-  }, [recent.chart, month.chart, id]);
+  }, [pack, packSessions, recent.chart, month.chart, id]);
   const dates = useMemo(() => {
     const list = sessions.map((s) => s.date);
     if (list.length) return list;
-    return mock ? [nyToday()] : [];
-  }, [sessions, mock]);
+    return mock && !pack ? [nyToday()] : [];
+  }, [sessions, mock, pack]);
 
   function sourceFor(date: string, tf: number): TapeSource {
+    if (pack) {
+      const day = barsOnDate(packBars, date, id);
+      return day.length ? "pack" : "empty";
+    }
     const day1 = m1.chart ? barsOnDate(m1.chart.bars, date, id) : [];
     const dayRecent = recent.chart ? barsOnDate(recent.chart.bars, date, id) : [];
     const dayMonth = month.chart ? barsOnDate(month.chart.bars, date, id) : [];
@@ -216,6 +253,10 @@ export function useReplayTape(id: string) {
   }
 
   function nativeMinutes(date: string, tf: number): number {
+    if (pack) {
+      const day = barsOnDate(packBars, date, id);
+      return day.length ? 1 : tf;
+    }
     const day1 = m1.chart ? barsOnDate(m1.chart.bars, date, id) : [];
     const dayRecent = recent.chart ? barsOnDate(recent.chart.bars, date, id) : [];
     const dayMonth = month.chart ? barsOnDate(month.chart.bars, date, id) : [];
@@ -227,6 +268,11 @@ export function useReplayTape(id: string) {
   }
 
   function barsFor(date: string, tf: number): Bar[] {
+    if (pack) {
+      const day = barsOnDate(packBars, date, id);
+      if (!day.length) return [];
+      return tf <= 1 ? day : resampleBars(day, tf);
+    }
     const day1 = m1.chart ? barsOnDate(m1.chart.bars, date, id) : [];
     const dayRecent = recent.chart ? barsOnDate(recent.chart.bars, date, id) : [];
     const dayMonth = month.chart ? barsOnDate(month.chart.bars, date, id) : [];
@@ -244,13 +290,14 @@ export function useReplayTape(id: string) {
   function sessionFor(date: string): SessionDay | null {
     const hit = sessions.find((s) => s.date === date);
     if (hit) return hit;
+    if (pack) return null;
     if (date && isMockOn()) return getSession(id, date, 5);
     return null;
   }
 
-  const live = recent.live || month.live || m1.live;
-  const loading = !live && (recent.loading || month.loading || m1.loading);
-  const yahoo = recent.chart?.yahoo ?? month.chart?.yahoo ?? m1.chart?.yahoo ?? null;
+  const live = pack ? pack.bars.length > 0 : recent.live || month.live || m1.live;
+  const loading = pack ? false : !live && (recent.loading || month.loading || m1.loading);
+  const yahoo = pack ? null : (recent.chart?.yahoo ?? month.chart?.yahoo ?? m1.chart?.yahoo ?? null);
 
   return {
     sessions,
@@ -261,7 +308,8 @@ export function useReplayTape(id: string) {
     sourceFor,
     live,
     yahoo,
-    error: recent.error && month.error && !m1.live ? recent.error : null,
+    pack: Boolean(pack),
+    error: pack ? null : recent.error && month.error && !m1.live ? recent.error : null,
     loading,
   };
 }
@@ -269,8 +317,16 @@ export function useReplayTape(id: string) {
 export async function evaluateLive(playbook: Playbook, days = 40): Promise<{
   evaluation: PlaybookEvaluation;
   live: boolean;
+  pack: boolean;
 }> {
+  const symbol = playbook.symbol || "NQ";
+  const pack = getTapePackForSymbol(symbol);
+  if (pack) {
+    const sessions = sessionsFromTapePack(pack);
+    const evaluation = evaluatePlaybook(playbook, days, sessions, false, "pack");
+    return { evaluation, live: false, pack: true };
+  }
   const res = await evaluateOnFeed({ data: { playbook, days, allowMock: isMockOn() } });
   if (!res.ok) throw new Error("Evaluate failed");
-  return { evaluation: res.evaluation, live: res.live };
+  return { evaluation: res.evaluation, live: res.live, pack: false };
 }

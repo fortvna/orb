@@ -31,6 +31,7 @@ import type { IndicatorId, Playbook, RangeLevel, ReplayMode, SessionDay, Trade }
 import { barsOnDate, filterSessionHours, nyParts, sessionFromBars, type SessionHours } from "@/lib/market/session";
 import { getSymbol } from "@/lib/market/symbols";
 import { PROP_CHALLENGES } from "@/lib/market/seed";
+import { TapePackPanel } from "@/components/tape-pack-panel";
 import { evaluateLive, useChart, useReplayTape } from "@/lib/market/use-feed";
 import { computePerformance } from "@/lib/market/stats";
 import { isMockOn } from "@/lib/mock";
@@ -452,16 +453,19 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
       const { evaluation, live } = await evaluateLive({ ...pb, symbol: pb.symbol || symbol }, 40);
       saveEvaluation(evaluation);
       const n = evaluation.summary.sessions;
+      const src = evaluation.summary.source ?? (live ? "live" : "model");
       const cap =
-        n > 0 && n < 40
-          ? ` Yahoo 5m history returned ${n} sessions (requested 40; tape is capped around 60 Globex days).`
-          : n >= 40
-            ? " Yahoo 5m history."
-            : "";
+        src === "pack"
+          ? " Uploaded 1m pack — not Yahoo."
+          : n > 0 && n < 40
+            ? ` Yahoo 5m history returned ${n} sessions (requested 40; tape is capped around 60 Globex days).`
+            : n >= 40
+              ? " Yahoo 5m history."
+              : "";
       setEvalNotice(
         evaluation.summary.source === "empty" || !evaluation.summary.sessions
-          ? "No live 5m sessions in this window. Wait for the tape, or turn on Model tape for today in Settings."
-          : `${pb.name}: ${evaluation.summary.trades} fills over ${n} ${live ? "live" : "model"} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}. Engine backtest — not your fills.${cap}`,
+          ? "No sessions in this window. Upload a 1m pack, wait for Yahoo, or turn on Model tape for today in Settings."
+          : `${pb.name}: ${evaluation.summary.trades} fills over ${n} ${src} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}. Engine backtest — not your fills.${cap}`,
       );
     } catch {
       setEvalNotice("Could not evaluate on the live tape.");
@@ -509,11 +513,13 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
         </Link>
         <Badge tone={mode === "eval" ? "warn" : "muted"}>{mode === "eval" ? "Evaluation" : "Free play"}</Badge>
         <Badge
-          tone={tapeSource === "live" ? "long" : tapeSource === "model" ? "warn" : "muted"}
+          tone={tapeSource === "live" || tapeSource === "pack" ? "long" : tapeSource === "model" ? "warn" : "muted"}
         >
           {hoursEmpty
             ? `No bars in ${HOURS.find((h) => h.id === hours)?.label ?? hours}`
-            : tapeSource === "live"
+            : tapeSource === "pack"
+              ? "Uploaded pack"
+              : tapeSource === "live"
               ? "Live history"
               : tapeSource === "model"
                 ? "Model tape"
@@ -529,6 +535,11 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
         {nativeTf !== tf && tapeSource === "live" ? (
           <Badge tone="warn" title="Yahoo 1m only covers about 5 Globex days. Older sessions stay on 5m.">
             Yahoo {nativeTf}m floor
+          </Badge>
+        ) : null}
+        {tapeSource === "pack" ? (
+          <Badge tone="steel" title="User-uploaded 1m OHLC. Not Yahoo. Not Themis.">
+            1m pack
           </Badge>
         ) : null}
         <SymbolSelect value={symbol} onChange={setSymbol} />
@@ -596,6 +607,7 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
             </Button>
           </>
         ) : null}
+        <TapePackPanel symbol={symbol} compact />
         <span className="ml-auto font-mono text-sm tabular-nums">
           {last ? fmtPx(last.close, spec.digits) : "—"}
         </span>
@@ -634,7 +646,9 @@ function ReplayWorkspace({ mode, playbookId }: { mode: ReplayMode; playbookId?: 
             <div className="absolute inset-0 z-10 flex items-center justify-center">
               <div className="text-center">
                 <div className="font-display text-2xl text-fg">Loading live tape</div>
-                <p className="mt-2 text-sm text-muted">Pulling Yahoo Globex history for {spec.label}…</p>
+                <p className="mt-2 text-sm text-muted">
+                  {tape.pack ? `Reading uploaded 1m pack for ${spec.label}…` : `Pulling Yahoo Globex history for ${spec.label}…`}
+                </p>
               </div>
             </div>
           ) : null}

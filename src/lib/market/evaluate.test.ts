@@ -180,6 +180,10 @@ describe("validated-blocked-on-model", () => {
     const model = evaluatePlaybook(lonnyBook(), 3, undefined, true);
     assert.equal(model.summary.source, "model");
     assert.equal(canMarkValidated(model.summary), false);
+
+    const packOk = evaluatePlaybook(lonnyBook(), 1, [lonnySession()], false, "pack");
+    assert.equal(packOk.summary.source, "pack");
+    assert.equal(canMarkValidated(packOk.summary), true);
   });
 });
 

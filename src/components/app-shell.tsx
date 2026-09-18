@@ -41,7 +41,17 @@ export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hydrate = useOrb((s) => s.hydrate);
   const watchlist = useOrb((s) => s.watchlist);
+  const packCount = useOrb((s) => s.tapePacks.length);
   const { live, error } = useQuotes(watchlist.slice(0, 6), 20000);
+  const feedLabel = packCount
+    ? live
+      ? "Yahoo quotes · 1m pack"
+      : "1m pack"
+    : live
+      ? "NY session · Yahoo"
+      : error
+        ? "Feed down"
+        : "Connecting feed";
 
   useEffect(() => {
     const go = () => {
@@ -94,12 +104,12 @@ export function AppShell() {
             <div className="mt-2 flex justify-center">
               <span
                 className={cn("size-1.5 rounded-full", live ? "bg-long" : "bg-subtle")}
-                title={live ? "Yahoo" : error ? "Feed down" : "Connecting"}
+                title={feedLabel}
               />
             </div>
           ) : (
             <div className="mt-3">
-              <LiveDot live={live} label={live ? "NY session · Yahoo" : error ? "Feed down" : "Connecting feed"} />
+              <LiveDot live={live || packCount > 0} label={feedLabel} />
             </div>
           )}
         </div>
@@ -110,7 +120,7 @@ export function AppShell() {
           <Logo />
         </Link>
         <div className="flex items-center gap-2">
-          <LiveDot live={live} label={live ? "Yahoo" : error ? "Feed down" : undefined} />
+          <LiveDot live={live || packCount > 0} label={packCount ? (live ? "Yahoo · pack" : "1m pack") : live ? "Yahoo" : error ? "Feed down" : undefined} />
           <Button variant="ghost" size="icon" aria-label="Menu" onClick={() => setOpen(true)}>
             <Menu />
           </Button>

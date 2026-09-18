@@ -18,7 +18,7 @@ Live market data. Not a broker. Not financial advice.
 - **Reports** — session base rates plus playbook evals and user-defined reports
 - **Journal** — calendar with stats
 - **Analytics** — generated from reports and playbooks
-- **Playbooks** — import JSON / CSV / Markdown / Metis `strt-*.md`, evaluate on live tape
+- **Playbooks** — import JSON / CSV / Markdown / Metis `strt-*.md`, evaluate on live tape or an uploaded 1m pack (`fortvna.tape.v0`)
 - **Prop** — challenge rule board against the journal
 - **Mentor** — draft, validate, then evaluate
 
