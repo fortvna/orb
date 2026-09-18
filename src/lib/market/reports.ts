@@ -410,7 +410,7 @@ export function buildPlaybookReport(playbook: Playbook, evaluation?: PlaybookEva
     kicker: `${playbook.symbol} · ${playbook.kind.toUpperCase()} · replay evaluation`,
     source: "playbook",
     summary: playbook.evaluation
-      ? `${playbook.name} was run across ${playbook.evaluation.sessions} ${playbook.evaluation.source === "model" ? "model" : "live"} sessions. ${playbook.evaluation.trades} fills, ${Math.round(playbook.evaluation.winRate * 100)}% win, expectancy ${playbook.evaluation.expectancy >= 0 ? "+" : ""}${Math.round(playbook.evaluation.expectancy)}.`
+      ? `${playbook.name} was run across ${playbook.evaluation.sessions} ${playbook.evaluation.source === "model" ? "model" : playbook.evaluation.source === "empty" ? "empty" : "live"} sessions. ${playbook.evaluation.trades} fills, ${Math.round(playbook.evaluation.winRate * 100)}% win, expectancy ${playbook.evaluation.expectancy >= 0 ? "+" : ""}${Math.round(playbook.evaluation.expectancy)}. Source ${playbook.evaluation.source ?? "unknown"} — model/empty cannot validate the book.`
       : `${playbook.name} has not been evaluated yet. Open Replay, load this playbook, and run Evaluate on the live tape — the report is generated from those fills.`,
     headline: [
       { label: "Win rate", value: `${Math.round(wr * 100)}%`, hint: `${perf.trades} fills` },
@@ -433,6 +433,7 @@ export function buildPlaybookReport(playbook: Playbook, evaluation?: PlaybookEva
       { label: "Window", value: `${fmtMin(playbook.windowStart)}–${fmtMin(playbook.windowEnd)} ET` },
       { label: "Target", value: `${playbook.targetR}R` },
       { label: "Validated", value: playbook.validated ? "yes" : "pending eval" },
+      { label: "Eval source", value: playbook.evaluation?.source ?? "none" },
     ],
   };
 }

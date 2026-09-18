@@ -3,7 +3,10 @@ import { getSession } from "./generate";
 import { getSymbol } from "./symbols";
 import { nyToday } from "./clock";
 import { kitForKind } from "./playbook-kit";
+import { SLEEVES } from "../hypothesis/id-map";
 import type { Playbook, PropChallenge, Trade } from "./types";
+
+const LONNY = SLEEVES["strt-fortvna-lonny-ib"]!;
 
 const DESK_BOOKS: Omit<Playbook, "indicators">[] = [
   {
@@ -33,30 +36,27 @@ const DESK_BOOKS: Omit<Playbook, "indicators">[] = [
     origin: "desk",
   },
   {
-    id: "pb-ib",
-    name: "LONNY-IB",
-    setup: "IB",
-    kind: "ib",
-    symbol: "NQ",
-    timeframe: "5m",
-    windowStart: 10 * 60 + 30,
-    windowEnd: 12 * 60,
-    targetR: 1,
+    id: LONNY.orbPlaybookId!,
+    name: LONNY.playbookName,
+    setup: LONNY.setup,
+    kind: LONNY.kind,
+    symbol: LONNY.symbol,
+    timeframe: LONNY.timeframe,
+    windowStart: LONNY.windowStart,
+    windowEnd: LONNY.windowEnd,
+    targetR: LONNY.targetR,
     stopTicks: null,
     validated: false,
-    mentorNotes: "Fortvna primary sleeve. First IB break with opening-candle continuation.",
-    thesis:
-      "The first hour is the container. Trade the first break of IB high/low in the direction of opening candle continuation.",
-    rules: [
-      "Wait for 10:30. No anticipation.",
-      "First break only, with OCC agreement.",
-      "Stop: 25% retrace back inside IB.",
-      "Scale at 0.5× and 1.0× IB size.",
-    ],
-    invalidation: "IB double break or first break that immediately re-enters and holds.",
-    session: "NY RTH",
+    mentorNotes: LONNY.mentorNotes,
+    thesis: LONNY.thesis,
+    rules: LONNY.rules,
+    invalidation: LONNY.invalidation,
+    session: LONNY.session,
     status: "active",
     origin: "desk",
+    metisSlug: LONNY.metisSlug,
+    hypothesisId: LONNY.hypothesisId,
+    groundingVersion: LONNY.groundingVersion,
   },
   {
     id: "pb-gap",

@@ -5,7 +5,32 @@ import { barsInClock, inNyWindow, nyParts, rangeOf, rthBars } from "./session";
 import { getSymbol } from "./symbols";
 import { computePerformance } from "./stats";
 import { isMockOn } from "../mock";
+import { isLonnyPlaybook } from "../hypothesis/id-map";
 import type { Bar, Playbook, PlaybookEvalSummary, PlaybookEvaluation, RangeLevel, SessionDay, Trade } from "./types";
+import { canMarkValidated } from "./types";
+
+export { canMarkValidated, isLonnyPlaybook };
+
+/** Grounding-v1 §1 frozen IB clocks (America/New_York). */
+const LONNY_LONDON_START = 2 * 60;
+const LONNY_LONDON_END = 8 * 60;
+const LONNY_IB_START = 9 * 60 + 30;
+const LONNY_IB_END = 10 * 60 + 30;
+const LONNY_KILL = 15 * 60;
+const LONNY_ENTRY_PCT = 0.25;
+const LONNY_STOP_PCT = 0.5;
+const LONNY_TP_EXT = 0.5;
+
+export function lonnyLevels(
+  ib: RangeLevel,
+  side: "long" | "short",
+): { entry: number; stop: number; target: number } {
+  const size = ib.size;
+  const entry = side === "long" ? ib.high - size * LONNY_ENTRY_PCT : ib.low + size * LONNY_ENTRY_PCT;
+  const stop = ib.low + size * LONNY_STOP_PCT;
+  const target = side === "long" ? ib.high + size * LONNY_TP_EXT : ib.low - size * LONNY_TP_EXT;
+  return { entry, stop, target };
+}
 
 function workBars(playbook: Playbook, session: SessionDay): Bar[] {
   const spec = getSymbol(session.symbol);
@@ -46,9 +71,26 @@ function simulate(
   side: "long" | "short",
   stop: number,
   target: number,
-): { exit: number; time: number; hit: "stop" | "target" | "close" } {
-  const hit = firstExit(bars, from, side, stop, target);
-  if (hit) return hit;
+  killMinutes?: number,
+): { exit: number; time: number; hit: "stop" | "target" | "close" | "time" } {
+  if (killMinutes == null) {
+    const hit = firstExit(bars, from, side, stop, target);
+    if (hit) return hit;
+    const last = bars[bars.length - 1]!;
+    return { exit: last.close, time: last.time, hit: "close" };
+  }
+  for (let i = from + 1; i < bars.length; i++) {
+    const b = bars[i]!;
+    const m = nyParts(b.time).minutes;
+    if (m >= killMinutes) return { exit: b.open, time: b.time, hit: "time" };
+    if (side === "long") {
+      if (stop != null && b.low <= stop) return { exit: stop, time: b.time, hit: "stop" };
+      if (target != null && b.high >= target) return { exit: target, time: b.time, hit: "target" };
+    } else {
+      if (stop != null && b.high >= stop) return { exit: stop, time: b.time, hit: "stop" };
+      if (target != null && b.low <= target) return { exit: target, time: b.time, hit: "target" };
+    }
+  }
   const last = bars[bars.length - 1]!;
   return { exit: last.close, time: last.time, hit: "close" };
 }
@@ -62,18 +104,20 @@ function tradeOf(
   bars: Bar[],
   stop: number,
   target: number,
+  opts?: { entry?: number; simulateFrom?: number; killMinutes?: number; tag?: string },
 ): Trade {
   const spec = getSymbol(session.symbol);
-  const sim = simulate(bars, entryIdx, side, stop, target);
+  const entry = opts?.entry ?? entryBar.close;
+  const sim = simulate(bars, opts?.simulateFrom ?? entryIdx, side, stop, target, opts?.killMinutes);
   const qty = 1;
-  const pnl = (side === "long" ? sim.exit - entryBar.close : entryBar.close - sim.exit) * qty * spec.pointValue;
-  const risk = Math.abs((stop - entryBar.close) * qty * spec.pointValue) || 1;
+  const pnl = (side === "long" ? sim.exit - entry : entry - sim.exit) * qty * spec.pointValue;
+  const risk = Math.abs((stop - entry) * qty * spec.pointValue) || 1;
   return {
     id: `ev-${playbook.id}-${session.date}-${entryBar.time}`,
     symbol: session.symbol,
     side,
     qty,
-    entry: entryBar.close,
+    entry,
     exit: sim.exit,
     entryTime: entryBar.time,
     exitTime: sim.time,
@@ -83,7 +127,7 @@ function tradeOf(
     fees: spec.kind === "futures" ? 4.08 : 1,
     rMultiple: pnl / risk,
     setup: playbook.setup,
-    tags: ["evaluated", playbook.kind],
+    tags: ["evaluated", playbook.kind, ...(opts?.tag ? [opts.tag] : [])],
     notes: `Evaluated ${playbook.name} · ${sim.hit}`,
     source: "evaluated",
     playbookId: playbook.id,
@@ -290,13 +334,117 @@ function runFvg(playbook: Playbook, session: SessionDay): Trade | null {
   return null;
 }
 
+function londonColor(bars: Bar[]): "up" | "down" | null {
+  const london = barsInClock(bars, LONNY_LONDON_START, LONNY_LONDON_END);
+  if (london.length < 2) return null;
+  return london[london.length - 1]!.close >= london[0]!.open ? "up" : "down";
+}
+
+/**
+ * LONNY-IB (Grounding-v1 §1). Not the generic IB OCC+0.25 stop.
+ *
+ * Fill gap: next-open + stop-first same-bar when the open is through IB 25%.
+ * Limit-on-wick skips same-bar stop/target (OHLC path unknown). See
+ * src/lib/hypothesis/README.md.
+ */
+function runLonnyIb(playbook: Playbook, session: SessionDay): Trade | null {
+  const london = londonColor(session.bars);
+  if (!london) return null;
+
+  const bars = workBars(playbook, session);
+  if (bars.length < 8) return null;
+
+  const ibBars = barsInClock(bars, LONNY_IB_START, LONNY_IB_END);
+  const ib = session.ib.size > 0 ? session.ib : ibBars.length >= 2 ? rangeOf(ibBars) : null;
+  if (!ib || ib.size <= 0) return null;
+
+  const occUp =
+    ibBars.length >= 2 ? ibBars[ibBars.length - 1]!.close >= ibBars[0]!.open : session.occ === "up";
+  const occ: "up" | "down" = occUp ? "up" : "down";
+  if (london !== occ) return null;
+
+  const lastIbTime = ibBars.at(-1)?.time ?? 0;
+  let first: "up" | "down" | null = null;
+  let breakIdx = -1;
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i]!;
+    if (lastIbTime && b.time <= lastIbTime) continue;
+    const m = nyParts(b.time).minutes;
+    if (m < LONNY_IB_END || m >= LONNY_KILL) continue;
+    const brokeHigh = b.high > ib.high;
+    const brokeLow = b.low < ib.low;
+    if (brokeHigh && brokeLow) return null;
+    if (brokeHigh) {
+      first = "up";
+      breakIdx = i;
+      break;
+    }
+    if (brokeLow) {
+      first = "down";
+      breakIdx = i;
+      break;
+    }
+  }
+  if (!first || breakIdx < 0) return null;
+  if (london === "up" && first !== "up") return null;
+  if (london === "down" && first !== "down") return null;
+
+  const side = first === "up" ? "long" : "short";
+  const levels = lonnyLevels(ib, side);
+
+  let fillIdx = -1;
+  let fillPx = levels.entry;
+  let scanFillBar = false;
+  for (let j = breakIdx + 1; j < bars.length; j++) {
+    const b = bars[j]!;
+    const m = nyParts(b.time).minutes;
+    if (m >= LONNY_KILL) return null;
+    if (side === "long") {
+      if (b.open <= levels.entry) {
+        fillIdx = j;
+        fillPx = b.open;
+        scanFillBar = true;
+        break;
+      }
+      if (b.low <= levels.entry) {
+        fillIdx = j;
+        fillPx = levels.entry;
+        scanFillBar = false;
+        break;
+      }
+    } else if (b.open >= levels.entry) {
+      fillIdx = j;
+      fillPx = b.open;
+      scanFillBar = true;
+      break;
+    } else if (b.high >= levels.entry) {
+      fillIdx = j;
+      fillPx = levels.entry;
+      scanFillBar = false;
+      break;
+    }
+  }
+  if (fillIdx < 0) return null;
+
+  const entryBar = bars[fillIdx]!;
+  const simulateFrom = scanFillBar ? Math.max(0, fillIdx - 1) : fillIdx;
+  return tradeOf(playbook, session, side, entryBar, fillIdx, bars, levels.stop, levels.target, {
+    entry: fillPx,
+    simulateFrom,
+    killMinutes: LONNY_KILL,
+    tag: "lonny",
+  });
+}
+
 function runSession(playbook: Playbook, session: SessionDay, prev?: SessionDay): Trade | null {
   switch (playbook.kind) {
     case "orb":
     case "custom":
       return runRangeBreak(playbook, session, containerMinutes(playbook.kind), false);
     case "ib":
-      return runRangeBreak(playbook, session, containerMinutes("ib"), true);
+      return isLonnyPlaybook(playbook)
+        ? runLonnyIb(playbook, session)
+        : runRangeBreak(playbook, session, containerMinutes("ib"), true);
     case "gap":
       return runGap(playbook, session, prev);
     case "vwap":

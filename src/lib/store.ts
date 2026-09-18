@@ -14,6 +14,7 @@ import type {
   PlaybookEvaluation,
   Trade,
 } from "./market/types";
+import { canMarkValidated } from "./market/types";
 
 export const EMPTY_DRAWINGS: Drawing[] = [];
 
@@ -114,6 +115,28 @@ function mergeDeskBooks(existing: Playbook[]): Playbook[] {
         indicators: seed.indicators,
       };
     }
+    if (next.id === "pb-ib" && next.groundingVersion !== seed.groundingVersion) {
+      return {
+        ...next,
+        name: seed.name,
+        setup: seed.setup,
+        thesis: seed.thesis,
+        rules: seed.rules,
+        invalidation: seed.invalidation,
+        mentorNotes: seed.mentorNotes,
+        session: seed.session,
+        timeframe: seed.timeframe,
+        windowStart: seed.windowStart,
+        windowEnd: seed.windowEnd,
+        targetR: seed.targetR,
+        metisSlug: seed.metisSlug,
+        hypothesisId: seed.hypothesisId,
+        groundingVersion: seed.groundingVersion,
+        indicators: seed.indicators,
+        validated: canMarkValidated(next.evaluation) && next.validated,
+        status: next.status === "validated" && !canMarkValidated(next.evaluation) ? "active" : next.status,
+      };
+    }
     return next;
   });
   const seen = new Set(hydrated.map((p) => p.id));
@@ -133,7 +156,13 @@ function reconcilePlaybooks(playbooks: Playbook[], evaluations: PlaybookEvaluati
         status: p.status === "validated" ? "active" : p.status,
       };
     }
-    return { ...p, evaluation: ev.summary };
+    const liveOk = canMarkValidated(ev.summary);
+    return {
+      ...p,
+      evaluation: ev.summary,
+      validated: liveOk && p.validated,
+      status: p.status === "validated" && !liveOk ? "active" : p.status,
+    };
   });
 }
 
@@ -225,7 +254,12 @@ export const useOrb = create<OrbState>()(
           playbooks: get().playbooks.map((p) => {
             if (p.id !== id) return p;
             if (status === "paused") return { ...p, status: "paused" };
-            if (status === "validated") return { ...p, status: "validated", validated: true };
+            if (status === "validated") {
+              if (!canMarkValidated(p.evaluation)) {
+                return { ...p, status: p.status === "draft" ? "active" : p.status, validated: false };
+              }
+              return { ...p, status: "validated", validated: true };
+            }
             if (p.validated) return { ...p, status: "validated" };
             return { ...p, status };
           }),
@@ -239,10 +273,21 @@ export const useOrb = create<OrbState>()(
       importPlaybooks: (list) => {
         if (!list.length) return 0;
         const existing = new Set(get().playbooks.map((p) => p.name.toLowerCase()));
+        const existingIds = new Set(get().playbooks.map((p) => p.id));
         const incoming = list.map((p, i) => {
           const name = existing.has(p.name.toLowerCase()) ? `${p.name} (${i + 1})` : p.name;
           existing.add(name.toLowerCase());
-          return hydratePlaybook({ ...p, name, origin: p.origin ?? "imported", validated: false, status: p.status === "validated" ? "active" : p.status });
+          let id = p.id;
+          if (existingIds.has(id)) id = `${id}-${Date.now().toString(36).slice(-3)}${i}`;
+          existingIds.add(id);
+          return hydratePlaybook({
+            ...p,
+            id,
+            name,
+            origin: p.origin ?? "imported",
+            validated: false,
+            status: p.status === "validated" ? "active" : p.status,
+          });
         });
         set({ playbooks: [...incoming, ...get().playbooks] });
         return incoming.length;
@@ -267,9 +312,19 @@ export const useOrb = create<OrbState>()(
           evaluations,
           playbooks: get().playbooks.map((p) => {
             if (p.id !== ev.playbookId) return p;
+            const liveOk = canMarkValidated(ev.summary);
             const nextStatus =
-              p.status === "draft" ? "active" : p.status === "validated" ? "validated" : p.status;
-            return { ...p, evaluation: ev.summary, status: nextStatus };
+              p.status === "draft"
+                ? "active"
+                : p.status === "validated" && !liveOk
+                  ? "active"
+                  : p.status;
+            return {
+              ...p,
+              evaluation: ev.summary,
+              status: nextStatus,
+              validated: liveOk && p.validated && nextStatus === "validated",
+            };
           }),
           trades: get().trades.filter((t) => !(t.source === "evaluated" && t.playbookId === ev.playbookId)),
         });

@@ -90,10 +90,12 @@ function MentorPage() {
       if (evaluation.summary.source === "live" && evaluation.summary.sessions > 0) {
         updatePlaybook(next.id, { status: "validated", validated: true, evaluation: evaluation.summary });
         setDraft({ ...next, status: "validated", validated: true, evaluation: evaluation.summary });
-      } else if (evaluation.summary.sessions > 0) {
-        setErr("That run used model tape — book stays unvalidated until a live window prints.");
+      } else if (evaluation.summary.source === "model" || evaluation.summary.sessions > 0) {
+        setErr(
+          `That run used ${evaluation.summary.source ?? "model"} tape — book stays unvalidated until a live window prints.`,
+        );
       } else {
-        setErr("No sessions in this window. Wait for the live tape, or turn on Model tape for today.");
+        setErr("No sessions in this window (source: empty). Wait for the live tape, or turn on Model tape for today — model cannot validate.");
       }
     } catch {
       setErr("Could not evaluate on the live tape.");

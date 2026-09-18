@@ -1,6 +1,8 @@
 import type { IndicatorId, Playbook, PlaybookKind } from "./types";
+import { canMarkValidated } from "./types";
 import { parseClock } from "./clock";
 import { kitForKind } from "./playbook-kit";
+import { hypothesisFromMetisMarkdown, isMetisMarkdown, playbookFromHypothesis } from "../hypothesis";
 
 function slug(name: string): string {
   const s = name
@@ -78,6 +80,10 @@ function parseIndicators(raw: unknown): IndicatorId[] | undefined {
 export function hydratePlaybook(p: Partial<Playbook> & { id: string; name: string }): Playbook {
   const setup = (p.setup || p.name).trim();
   const kind = p.kind ?? inferKind(setup);
+  const liveOk = canMarkValidated(p.evaluation);
+  const wantedValidated = Boolean(p.validated ?? p.status === "validated");
+  const validated = liveOk && wantedValidated;
+  const status = p.status === "validated" && !validated ? "active" : (p.status ?? "active");
   return {
     id: p.id,
     name: p.name,
@@ -86,7 +92,7 @@ export function hydratePlaybook(p: Partial<Playbook> & { id: string; name: strin
     rules: p.rules ?? [],
     invalidation: p.invalidation ?? "",
     session: p.session ?? "NY RTH",
-    status: p.status ?? "active",
+    status,
     origin: p.origin ?? "custom",
     kind,
     symbol: p.symbol ?? "NQ",
@@ -95,10 +101,13 @@ export function hydratePlaybook(p: Partial<Playbook> & { id: string; name: strin
     windowEnd: p.windowEnd ?? 16 * 60,
     targetR: p.targetR ?? 1,
     stopTicks: p.stopTicks ?? null,
-    validated: p.validated ?? p.status === "validated",
+    validated,
     mentorNotes: p.mentorNotes ?? "",
     indicators: p.indicators?.length ? p.indicators : kitForKind(kind),
     evaluation: p.evaluation,
+    metisSlug: p.metisSlug,
+    hypothesisId: p.hypothesisId,
+    groundingVersion: p.groundingVersion,
   };
 }
 
@@ -147,6 +156,9 @@ function asPlaybook(raw: Record<string, unknown>, index = 0): Playbook | null {
     targetR: Number(raw.targetR ?? raw.target ?? 1) || 1,
     stopTicks: numOrNull(raw.stopTicks ?? raw.stop_ticks ?? raw.stopticks),
     indicators: parseIndicators(raw.indicators ?? raw.kit),
+    metisSlug: raw.metisSlug || raw.metis_slug ? String(raw.metisSlug ?? raw.metis_slug) : undefined,
+    hypothesisId: raw.hypothesisId || raw.hypothesis_id ? String(raw.hypothesisId ?? raw.hypothesis_id) : undefined,
+    groundingVersion: raw.groundingVersion || raw.grounding_version ? String(raw.groundingVersion ?? raw.grounding_version) : undefined,
   });
 }
 
@@ -261,6 +273,15 @@ function matchSection(body: string, key: string): string | null {
   return m?.[1]?.trim() ?? null;
 }
 
+function parseMetis(text: string): Playbook[] {
+  try {
+    const h = hypothesisFromMetisMarkdown(text);
+    return [playbookFromHypothesis(h)];
+  } catch {
+    return [];
+  }
+}
+
 export function parsePlaybooks(text: string, filename = ""): Playbook[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
@@ -275,6 +296,10 @@ export function parsePlaybooks(text: string, filename = ""): Playbook[] {
   if (lower.endsWith(".csv") || /^name[,;]/i.test(trimmed)) {
     const rows = parseCsv(trimmed);
     if (rows.length) return rows;
+  }
+  if (isMetisMarkdown(trimmed, filename)) {
+    const metis = parseMetis(trimmed);
+    if (metis.length) return metis;
   }
   const md = parseMarkdown(trimmed);
   if (md.length) return md;

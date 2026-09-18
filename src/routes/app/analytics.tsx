@@ -36,6 +36,7 @@ function AnalyticsPage() {
       name: p.name,
       kind: p.kind,
       validated: p.validated,
+      source: p.evaluation?.source,
       n: p.evaluation?.trades ?? 0,
       wr: p.evaluation?.winRate ?? 0,
       exp: p.evaluation?.expectancy ?? 0,
@@ -163,6 +164,7 @@ function AnalyticsPage() {
                       <div className="text-[10px] uppercase tracking-[0.12em] text-subtle">
                         {s.kind}
                         {s.validated ? " · validated" : ""}
+                        {s.source ? ` · ${s.source}` : ""}
                       </div>
                     </td>
                     <td className="py-2 font-mono">{s.n}</td>

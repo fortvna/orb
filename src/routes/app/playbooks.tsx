@@ -13,6 +13,8 @@ import { KIT_CHOICES, kitForKind, kitLabel } from "@/lib/market/playbook-kit";
 import { fmtClock, parseClock } from "@/lib/market/clock";
 import { SYMBOLS } from "@/lib/market/symbols";
 import type { IndicatorId, Playbook, PlaybookKind } from "@/lib/market/types";
+import { evalSourceLabel } from "@/lib/market/types";
+import { isMetisMarkdown } from "@/lib/hypothesis";
 import { useOrb } from "@/lib/store";
 
 export const Route = createFileRoute("/app/playbooks")({ component: PlaybooksPage });
@@ -56,7 +58,12 @@ function PlaybooksPage() {
       return;
     }
     const n = importPlaybooks(list);
-    setNotice(`Imported ${n} playbook${n === 1 ? "" : "s"}.`);
+    const slugs = list.map((p) => p.metisSlug).filter(Boolean);
+    setNotice(
+      slugs.length
+        ? `Imported ${n} Metis card${n === 1 ? "" : "s"} (${slugs.join(", ")}). Origin stamped imported; source URL in mentor notes.`
+        : `Imported ${n} playbook${n === 1 ? "" : "s"}.`,
+    );
     setPaste("");
     setShowImport(false);
   }
@@ -78,8 +85,8 @@ function PlaybooksPage() {
       saveEvaluation(evaluation);
       setNotice(
         evaluation.summary.source === "empty" || !evaluation.summary.sessions
-          ? `${pb.name}: no live 5m sessions in this window. Try again once the tape loads, or turn on Model tape for today.`
-          : `${pb.name}: ${evaluation.summary.trades} fills / ${evaluation.summary.sessions} ${live ? "live" : "model"} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}`,
+          ? `${pb.name}: no live 5m sessions in this window (source: empty). Try again once the tape loads, or turn on Model tape for today — model cannot validate.`
+          : `${pb.name}: ${evaluation.summary.trades} fills / ${evaluation.summary.sessions} ${evaluation.summary.source ?? (live ? "live" : "model")} sessions · WR ${Math.round(evaluation.summary.winRate * 100)}% · PF ${evaluation.summary.profitFactor.toFixed(2)}`,
       );
     } catch {
       setNotice("Could not evaluate on the live tape.");
@@ -117,8 +124,9 @@ function PlaybooksPage() {
           <Panel className="p-5">
             <h2 className="text-sm font-medium">Import playbooks</h2>
             <p className="mt-1 text-sm text-muted">
-              Drop JSON, CSV, or Markdown. Fields: name, setup, kind, symbol, session, thesis, rules,
-              invalidation.
+              Drop JSON, CSV, Markdown, or a Metis <span className="font-mono">strt-*.md</span> card
+              (## Idea / Setup / Entry / Exit / Invalidation, or Setup / Trigger / Stop). Origin is
+              stamped imported; source URL lands in mentor notes. Yahoo tape ≠ Themis ask.
             </p>
             <input
               ref={fileRef}
@@ -142,13 +150,17 @@ function PlaybooksPage() {
             </div>
             <Textarea
               className="mt-3 min-h-40 font-mono text-xs"
-              placeholder="Paste JSON, CSV, or Markdown…"
+              placeholder="Paste JSON, CSV, Markdown, or a Metis strt-*.md card…"
               value={paste}
               onChange={(e) => setPaste(e.target.value)}
             />
-            <div className="mt-3">
-              <Button size="sm" disabled={!paste.trim()} onClick={() => applyImport(paste)}>
-                Import pasted
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                disabled={!paste.trim()}
+                onClick={() => applyImport(paste, isMetisMarkdown(paste) ? "strt-paste.md" : "")}
+              >
+                {isMetisMarkdown(paste) ? "Import Metis card" : "Import pasted"}
               </Button>
             </div>
           </Panel>
@@ -191,6 +203,8 @@ function PlaybooksPage() {
                       {pb.symbol} · {pb.kind} · {pb.timeframe} · {fmtClock(pb.windowStart)}–
                       {fmtClock(pb.windowEnd)} · {pb.targetR}R
                       {pb.origin === "imported" ? " · imported" : pb.origin === "mentor" ? " · mentor" : ""}
+                      {pb.metisSlug ? ` · ${pb.metisSlug}` : ""}
+                      {pb.groundingVersion ? ` · grounding ${pb.groundingVersion}` : ""}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1">
                       {(pb.indicators ?? []).map((id) => (
@@ -221,7 +235,9 @@ function PlaybooksPage() {
                         <PnlText value={ev.net} className="text-lg" />
                         <div className="text-xs text-muted">
                           {ev.trades} fills · {Math.round(ev.winRate * 100)}% win · PF {ev.profitFactor.toFixed(2)}
-                          {ev.source === "model" ? " · model tape" : ev.source === "live" ? " · live" : ""}
+                          {" · "}
+                          {evalSourceLabel(ev.source)}
+                          {ev.source === "model" || ev.source === "empty" ? " · not validated" : ""}
                         </div>
                       </>
                     ) : (

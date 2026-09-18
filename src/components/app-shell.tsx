@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import { Logo } from "@/components/brand/logo";
 import { DeskSettings } from "@/components/desk-settings";
 import { LiveDot } from "@/components/live-dot";
+import { TapeHonestyBanner } from "@/components/tape-honesty-banner";
 import { Button } from "@/components/ui/button";
 import { useQuotes } from "@/lib/market/use-feed";
 import { useOrb } from "@/lib/store";
@@ -143,6 +144,7 @@ export function AppShell() {
       ) : null}
 
       <div className={cn("min-w-0", cinema ? "lg:pl-14" : "lg:pl-56")}>
+        <TapeHonestyBanner />
         <main className="min-h-dvh min-w-0 overflow-x-hidden pb-20 lg:pb-0">
           <Outlet />
         </main>

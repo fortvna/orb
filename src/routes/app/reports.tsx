@@ -126,7 +126,7 @@ function ReportsPage() {
                 active={selected === `pb:${p.id}`}
                 onClick={() => pick(`pb:${p.id}`)}
                 title={p.name}
-                blurb={p.evaluation ? `${Math.round(p.evaluation.winRate * 100)}% WR · ${p.evaluation.trades} fills${p.evaluation.source === "model" ? " · model" : ""}` : "Evaluate in replay"}
+                blurb={p.evaluation ? `${Math.round(p.evaluation.winRate * 100)}% WR · ${p.evaluation.trades} fills · ${p.evaluation.source ?? "unevaluated"}` : "Evaluate in replay"}
               />
             ))}
           </Panel>

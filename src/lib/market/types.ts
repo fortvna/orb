@@ -114,6 +114,18 @@ export type PlaybookEvalSummary = {
   source?: "live" | "model" | "empty";
 };
 
+/** Live tape only. Model / empty / missing source must never stamp validated. */
+export function canMarkValidated(summary?: PlaybookEvalSummary | null): boolean {
+  return summary?.source === "live" && (summary.sessions ?? 0) > 0;
+}
+
+export function evalSourceLabel(source?: PlaybookEvalSummary["source"]): string {
+  if (source === "live") return "live";
+  if (source === "model") return "model tape";
+  if (source === "empty") return "empty";
+  return "unevaluated";
+}
+
 export type Playbook = {
   id: string;
   name: string;
@@ -135,6 +147,9 @@ export type Playbook = {
   mentorNotes: string;
   indicators: IndicatorId[];
   evaluation?: PlaybookEvalSummary;
+  metisSlug?: string;
+  hypothesisId?: string;
+  groundingVersion?: string;
 };
 
 export type PlaybookEvaluation = {
