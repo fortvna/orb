@@ -30,6 +30,8 @@ export function kitForKind(kind: PlaybookKind): IndicatorId[] {
       return ["volume", "keyTimes", "ibH", "ibL", "vwap", "ema"];
     case "fvg":
       return ["volume", "keyTimes", "killzones", "orH", "orL", "fvg"];
+    case "streak":
+      return ["volume", "keyTimes", "killzones"];
     default:
       return ["volume", "keyTimes", "orH", "orL", "ibH", "ibL", "vwap"];
   }
@@ -62,7 +64,7 @@ export function kitLabel(id: IndicatorId): string {
 /** Minutes of range mapped before `windowStart`. IB / VWAP use the first hour. */
 export function containerMinutes(kind: PlaybookKind): number {
   if (kind === "ib" || kind === "vwap") return 60;
-  if (kind === "gap" || kind === "fvg") return 0;
+  if (kind === "gap" || kind === "fvg" || kind === "streak") return 0;
   return 15;
 }
 

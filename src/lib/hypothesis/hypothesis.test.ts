@@ -11,11 +11,11 @@ import {
 } from "./index.ts";
 import type { Hypothesis } from "./schema.ts";
 
-function loadLonnyMd(): string {
+function loadMetisMd(slug: string): string {
   const candidates = [
-    join(process.cwd(), "_handoff/strt-fortvna-lonny-ib.md"),
-    join(process.cwd(), "../orb-handoff/strt-fortvna-lonny-ib.md"),
-    "/workspace/orb-handoff/strt-fortvna-lonny-ib.md",
+    join(process.cwd(), `_handoff/${slug}.md`),
+    join(process.cwd(), `../orb-handoff/${slug}.md`),
+    `/workspace/orb-handoff/${slug}.md`,
   ];
   for (const p of candidates) {
     try {
@@ -24,7 +24,11 @@ function loadLonnyMd(): string {
       /* next */
     }
   }
-  throw new Error("LONNY Metis markdown fixture not found");
+  throw new Error(`${slug} Metis markdown fixture not found`);
+}
+
+function loadLonnyMd(): string {
+  return loadMetisMd("strt-fortvna-lonny-ib");
 }
 
 describe("fortvna.hypothesis.v0", () => {
@@ -97,5 +101,33 @@ describe("fortvna.hypothesis.v0", () => {
     assert.match(sText, /\byahoo SPY\b/);
     assert.doesNotMatch(sText, /yahoo ES/);
     assert.match(qText, /Do not relabel QQQ as NQ/);
+  });
+
+  it("parses Herman Metis markdown onto the locked streak sleeve", () => {
+    const md = loadMetisMd("strt-rherman-streak-failure-reversal");
+    const h = hypothesisFromMetisMarkdown(md);
+    assert.equal(h.metis_slug, "strt-rherman-streak-failure-reversal");
+    assert.equal(h.id, "hyp-rherman-streak-failure-reversal");
+    assert.equal(h.pointers.orb_playbook_id, "pb-streak-herman");
+    assert.equal(h.pointers.crucible_strategy_id, "herman-streak-failure");
+    assert.equal(h.instruments[0]?.symbol, "NQ");
+    assert.equal(h.grounding_version, "v1");
+    const pb = playbookFromHypothesis(h);
+    assert.equal(pb.id, "pb-streak-herman");
+    assert.equal(pb.kind, "streak");
+    assert.equal(pb.origin, "imported");
+    assert.equal(pb.validated, false);
+    assert.equal(pb.metisSlug, "strt-rherman-streak-failure-reversal");
+    assert.equal(pb.timeframe, "1m");
+    assert.equal(pb.windowStart, 9 * 60 + 45);
+    assert.equal(pb.windowEnd, 12 * 60);
+    assert.equal(pb.targetR, 1);
+    assert.match(pb.thesis, /marketing/i);
+    assert.match(pb.thesis, /not measured edge/i);
+    assert.match(pb.mentorNotes, /author defaults v1/);
+    assert.match(pb.mentorNotes, /execution_ready false/);
+    assert.ok(pb.rules.some((r) => /5 consecutive/i.test(r)));
+    assert.ok(pb.rules.some((r) => /next 1m open/i.test(r)));
+    assert.match(pb.thesis, /not a money printer/i);
   });
 });

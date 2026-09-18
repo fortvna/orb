@@ -5,11 +5,18 @@ import { barsInClock, inNyWindow, nyParts, rangeOf, rthBars } from "./session";
 import { getSymbol } from "./symbols";
 import { computePerformance } from "./stats";
 import { isMockOn } from "../mock";
-import { isLonnyPlaybook } from "../hypothesis/id-map";
+import { isHermanPlaybook, isLonnyPlaybook } from "../hypothesis/id-map";
 import type { Bar, Playbook, PlaybookEvalSummary, PlaybookEvaluation, RangeLevel, SessionDay, Trade } from "./types";
 import { canMarkValidated } from "./types";
 
-export { canMarkValidated, isLonnyPlaybook };
+export { canMarkValidated, isHermanPlaybook, isLonnyPlaybook };
+
+/** Author defaults v1 — Streak Failure Reversal [Herman]. Frozen; do not optimize. */
+export const HERMAN_STREAK_LEN = 5;
+export const HERMAN_WAIT_BARS = 15;
+export const HERMAN_SESSION_START = 9 * 60 + 45;
+export const HERMAN_SESSION_END = 12 * 60;
+export const HERMAN_FLAT = 16 * 60;
 
 /** Grounding-v1 §1 frozen IB clocks (America/New_York). */
 const LONNY_LONDON_START = 2 * 60;
@@ -128,7 +135,10 @@ function tradeOf(
     rMultiple: pnl / risk,
     setup: playbook.setup,
     tags: ["evaluated", playbook.kind, ...(opts?.tag ? [opts.tag] : [])],
-    notes: `Evaluated ${playbook.name} · ${sim.hit}`,
+    notes:
+      opts?.tag === "herman"
+        ? `Evaluated ${playbook.name} · ${sim.hit} · NQ-ish commission on fill; slip not in PF (do not treat thin tape as edge)`
+        : `Evaluated ${playbook.name} · ${sim.hit}`,
     source: "evaluated",
     playbookId: playbook.id,
     date: session.date,
@@ -436,7 +446,110 @@ function runLonnyIb(playbook: Playbook, session: SessionDay): Trade | null {
   });
 }
 
+type StreakArm = {
+  setupIndex: number;
+  breakLevel: number;
+  stop: number;
+};
+
+function hermanInSession(bar: Bar): boolean {
+  return inNyWindow(nyParts(bar.time).minutes, HERMAN_SESSION_START, HERMAN_SESSION_END);
+}
+
+/**
+ * Streak Failure Reversal [Herman] author defaults v1 (Pine freeze).
+ * 5 consecutive 1m bodies → arm opposite; confirm = later signal close beyond
+ * the terminal streak extreme within 15 bars; fill next 1m open; SL = terminal
+ * streak candle extreme; TP = 1R; session 09:45–12:00 NY; hard flat 16:00.
+ * Wicks alone do not confirm. One position per session.
+ */
+function hermanBars(session: SessionDay): Bar[] {
+  const slice = session.bars.filter((b) => {
+    const m = nyParts(b.time).minutes;
+    return m >= 9 * 60 + 30 && m <= HERMAN_FLAT;
+  });
+  return slice.length >= 8 ? slice : session.bars;
+}
+
+function runStreakFailure(playbook: Playbook, session: SessionDay): Trade | null {
+  const bars = hermanBars(session);
+  if (bars.length < HERMAN_STREAK_LEN + 2) return null;
+  const tick = getSymbol(session.symbol).tick;
+
+  let up = 0;
+  let dn = 0;
+  let armShort: StreakArm | null = null;
+  let armLong: StreakArm | null = null;
+
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i]!;
+    const m = nyParts(b.time).minutes;
+    if (m >= HERMAN_FLAT) break;
+
+    up = b.close > b.open ? up + 1 : 0;
+    dn = b.close < b.open ? dn + 1 : 0;
+
+    if (armShort && i - armShort.setupIndex > HERMAN_WAIT_BARS) armShort = null;
+    if (armLong && i - armLong.setupIndex > HERMAN_WAIT_BARS) armLong = null;
+
+    const shortAge = armShort ? i - armShort.setupIndex : 0;
+    const longAge = armLong ? i - armLong.setupIndex : 0;
+    const shortBreak =
+      !!armShort && shortAge >= 1 && shortAge <= HERMAN_WAIT_BARS && b.close < armShort.breakLevel;
+    const longBreak =
+      !!armLong && longAge >= 1 && longAge <= HERMAN_WAIT_BARS && b.close > armLong.breakLevel;
+
+    let side: "long" | "short" | null = null;
+    if (shortBreak && longBreak) {
+      side = armShort!.setupIndex > armLong!.setupIndex ? "short" : "long";
+    } else if (shortBreak) side = "short";
+    else if (longBreak) side = "long";
+
+    if (side) {
+      const arm = side === "short" ? armShort! : armLong!;
+      if (shortBreak) armShort = null;
+      if (longBreak) armLong = null;
+
+      if (hermanInSession(b)) {
+        const fillIdx = i + 1;
+        if (fillIdx < bars.length) {
+          const fillBar = bars[fillIdx]!;
+          const fillM = nyParts(fillBar.time).minutes;
+          if (fillM < HERMAN_FLAT) {
+            const entry = fillBar.open;
+            const stop = arm.stop;
+            const risk = side === "long" ? entry - stop : stop - entry;
+            if (risk >= tick * 0.5) {
+              const target = side === "long" ? entry + risk : entry - risk;
+              return tradeOf(playbook, session, side, fillBar, fillIdx, bars, stop, target, {
+                entry,
+                simulateFrom: Math.max(0, fillIdx - 1),
+                killMinutes: HERMAN_FLAT,
+                tag: "herman",
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (armShort && i - armShort.setupIndex >= HERMAN_WAIT_BARS) armShort = null;
+    if (armLong && i - armLong.setupIndex >= HERMAN_WAIT_BARS) armLong = null;
+
+    if (hermanInSession(b) && up === HERMAN_STREAK_LEN) {
+      armShort = { setupIndex: i, breakLevel: b.low, stop: b.high };
+    }
+    if (hermanInSession(b) && dn === HERMAN_STREAK_LEN) {
+      armLong = { setupIndex: i, breakLevel: b.high, stop: b.low };
+    }
+  }
+  return null;
+}
+
 function runSession(playbook: Playbook, session: SessionDay, prev?: SessionDay): Trade | null {
+  if (playbook.kind === "streak" || isHermanPlaybook(playbook)) {
+    return runStreakFailure(playbook, session);
+  }
   switch (playbook.kind) {
     case "orb":
     case "custom":

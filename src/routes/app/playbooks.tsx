@@ -321,6 +321,7 @@ function PlaybookForm({
             <option value="gap">Gap</option>
             <option value="vwap">VWAP</option>
             <option value="fvg">FVG</option>
+            <option value="streak">Streak failure</option>
             <option value="custom">Custom</option>
           </NativeSelect>
         </label>

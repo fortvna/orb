@@ -96,7 +96,7 @@ export type Trade = {
   open: boolean;
 };
 
-export type PlaybookKind = "orb" | "ib" | "gap" | "vwap" | "fvg" | "custom";
+export type PlaybookKind = "orb" | "ib" | "gap" | "vwap" | "fvg" | "streak" | "custom";
 
 export type PlaybookStatus = "draft" | "active" | "paused" | "validated";
 

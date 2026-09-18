@@ -23,6 +23,7 @@ function inferKind(h: Hypothesis): Playbook["kind"] {
   const locked = sleeveByMetisSlug(h.metis_slug);
   if (locked) return locked.kind;
   const blob = `${h.metis_slug} ${h.setup} ${h.entry}`.toLowerCase();
+  if (blob.includes("streak") || blob.includes("herman")) return "streak";
   if (blob.includes("ib") || blob.includes("lonny")) return "ib";
   if (blob.includes("gap")) return "gap";
   if (blob.includes("vwap")) return "vwap";

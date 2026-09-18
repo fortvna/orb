@@ -121,7 +121,10 @@ function mergeDeskBooks(existing: Playbook[]): Playbook[] {
         indicators: seed.indicators,
       };
     }
-    if (next.id === "pb-ib" && next.groundingVersion !== seed.groundingVersion) {
+    if (
+      (next.id === "pb-ib" || next.id === "pb-streak-herman") &&
+      next.groundingVersion !== seed.groundingVersion
+    ) {
       return {
         ...next,
         name: seed.name,

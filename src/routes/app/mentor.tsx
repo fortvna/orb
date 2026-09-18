@@ -278,7 +278,9 @@ function fallbackDraft(prompt: string, base?: Playbook | null): Playbook {
           ? "VWAP reclaim draft"
           : kind === "fvg"
             ? "FVG invert draft"
-            : "Opening range draft";
+            : kind === "streak"
+              ? "Streak failure draft"
+              : "Opening range draft";
   return hydratePlaybook({
     id: `pb-mentor-${Date.now().toString(36)}`,
     name,

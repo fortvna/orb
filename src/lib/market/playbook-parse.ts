@@ -17,8 +17,11 @@ function makeId(name: string): string {
   return `pb-${slug(name)}-${Date.now().toString(36).slice(-4)}`;
 }
 
+const PLAYBOOK_KINDS = ["orb", "ib", "gap", "vwap", "fvg", "streak", "custom"] as const;
+
 export function inferKind(setup: string): PlaybookKind {
   const s = setup.toLowerCase();
+  if (s.includes("streak") || s.includes("herman")) return "streak";
   if (s.includes("ib") || s.includes("balance") || s.includes("lonny")) return "ib";
   if (s.includes("gap")) return "gap";
   if (s.includes("vwap")) return "vwap";
@@ -124,9 +127,7 @@ function asPlaybook(raw: Record<string, unknown>, index = 0): Playbook | null {
       .filter(Boolean);
   }
   const kindRaw = String(raw.kind ?? "").toLowerCase();
-  const kind = (["orb", "ib", "gap", "vwap", "fvg", "custom"] as const).includes(
-    kindRaw as PlaybookKind,
-  )
+  const kind = (PLAYBOOK_KINDS as readonly string[]).includes(kindRaw)
     ? (kindRaw as PlaybookKind)
     : undefined;
   const statusRaw = String(raw.status ?? "").toLowerCase();

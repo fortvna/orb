@@ -7,6 +7,7 @@ import { SLEEVES } from "../hypothesis/id-map";
 import type { Playbook, PropChallenge, Trade } from "./types";
 
 const LONNY = SLEEVES["strt-fortvna-lonny-ib"]!;
+const HERMAN = SLEEVES["strt-rherman-streak-failure-reversal"]!;
 
 const DESK_BOOKS: Omit<Playbook, "indicators">[] = [
   {
@@ -57,6 +58,29 @@ const DESK_BOOKS: Omit<Playbook, "indicators">[] = [
     metisSlug: LONNY.metisSlug,
     hypothesisId: LONNY.hypothesisId,
     groundingVersion: LONNY.groundingVersion,
+  },
+  {
+    id: HERMAN.orbPlaybookId!,
+    name: HERMAN.playbookName,
+    setup: HERMAN.setup,
+    kind: HERMAN.kind,
+    symbol: HERMAN.symbol,
+    timeframe: HERMAN.timeframe,
+    windowStart: HERMAN.windowStart,
+    windowEnd: HERMAN.windowEnd,
+    targetR: HERMAN.targetR,
+    stopTicks: null,
+    validated: false,
+    mentorNotes: HERMAN.mentorNotes,
+    thesis: HERMAN.thesis,
+    rules: HERMAN.rules,
+    invalidation: HERMAN.invalidation,
+    session: HERMAN.session,
+    status: "active",
+    origin: "desk",
+    metisSlug: HERMAN.metisSlug,
+    hypothesisId: HERMAN.hypothesisId,
+    groundingVersion: HERMAN.groundingVersion,
   },
   {
     id: "pb-gap",

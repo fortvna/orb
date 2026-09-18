@@ -25,6 +25,21 @@ describe("Metis MD → Playbook", () => {
     assert.match(pb.mentorNotes, /strt-fortvna-lonny-ib/);
   });
 
+  it("parsePlaybooks reads the Herman Metis card with metisSlug set", () => {
+    const md = readFileSync(join(process.cwd(), "_handoff/strt-rherman-streak-failure-reversal.md"), "utf8");
+    const list = parsePlaybooks(md, "strt-rherman-streak-failure-reversal.md");
+    assert.equal(list.length, 1);
+    const pb = list[0]!;
+    assert.equal(pb.metisSlug, "strt-rherman-streak-failure-reversal");
+    assert.equal(pb.id, "pb-streak-herman");
+    assert.equal(pb.kind, "streak");
+    assert.equal(pb.symbol, "NQ");
+    assert.equal(pb.origin, "imported");
+    assert.equal(pb.validated, false);
+    assert.match(pb.thesis, /marketing/i);
+    assert.match(pb.mentorNotes, /author defaults v1/);
+  });
+
   it("blocks validated when eval source is model or empty", () => {
     const model: PlaybookEvalSummary = {
       at: 1,

@@ -14,9 +14,11 @@ export {
 } from "./schema";
 
 export {
+  HERMAN_METIS_SLUG,
   LONNY_METIS_SLUG,
   SANTANA_METIS_SLUG,
   SLEEVES,
+  isHermanPlaybook,
   isLonnyPlaybook,
   sleeveByCrucibleId,
   sleeveByMetisSlug,

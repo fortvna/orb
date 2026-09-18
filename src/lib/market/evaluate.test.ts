@@ -1,7 +1,11 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { canMarkValidated, evaluatePlaybook, firstExit, lonnyLevels } from "./evaluate.ts";
 import { PLAYBOOKS } from "./seed.ts";
+import { sessionFromBars } from "./session.ts";
+import { parseTapePackJson, sessionsFromTapePack } from "./tape-pack.ts";
 import type { Bar, Playbook, RangeLevel, SessionDay } from "./types.ts";
 
 function bar(i: number, high: number, low: number): Bar {
@@ -184,6 +188,174 @@ describe("validated-blocked-on-model", () => {
     const packOk = evaluatePlaybook(lonnyBook(), 1, [lonnySession()], false, "pack");
     assert.equal(packOk.summary.source, "pack");
     assert.equal(canMarkValidated(packOk.summary), true);
+  });
+});
+
+function hermanBook(): Playbook {
+  const pb = PLAYBOOKS.find((p) => p.id === "pb-streak-herman");
+  assert.ok(pb);
+  return pb!;
+}
+
+function loadHermanFixture() {
+  const text = readFileSync(join(process.cwd(), "src/lib/market/fixtures/herman-nq-1m-streak.json"), "utf8");
+  const parsed = parseTapePackJson(text);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.pack;
+}
+
+function hermanPad(): Bar[] {
+  const out: Bar[] = [];
+  for (let i = 0; i < 15; i++) {
+    const et = 9 * 60 + 30 + i;
+    const o = 24000 + i;
+    out.push(barAt(et, o, o + 1, o - 1, o));
+  }
+  return out;
+}
+
+function hermanSession(extra: Bar[]): SessionDay {
+  return sessionFromBars({
+    symbol: "NQ",
+    date: "2026-09-11",
+    bars: [...hermanPad(), ...extra],
+    prevClose: 23990,
+    barMinutes: 1,
+  });
+}
+
+const HERMAN_BULLS: Bar[] = [
+  barAt(9 * 60 + 45, 24100, 24112, 24098, 24110),
+  barAt(9 * 60 + 46, 24110, 24122, 24108, 24120),
+  barAt(9 * 60 + 47, 24120, 24132, 24118, 24130),
+  barAt(9 * 60 + 48, 24130, 24142, 24128, 24140),
+  barAt(9 * 60 + 49, 24140, 24155, 24135, 24150),
+];
+
+describe("Herman streak failure (author defaults v1)", () => {
+  it("desk seed is locked to author defaults, not the screenshot WR", () => {
+    const pb = hermanBook();
+    assert.equal(pb.kind, "streak");
+    assert.equal(pb.symbol, "NQ");
+    assert.equal(pb.timeframe, "1m");
+    assert.equal(pb.windowStart, 9 * 60 + 45);
+    assert.equal(pb.windowEnd, 12 * 60);
+    assert.equal(pb.targetR, 1);
+    assert.equal(pb.metisSlug, "strt-rherman-streak-failure-reversal");
+    assert.equal(pb.groundingVersion, "v1");
+    assert.match(pb.thesis, /marketing/i);
+    assert.match(pb.thesis, /not measured edge/i);
+    assert.match(pb.mentorNotes, /author defaults v1/);
+    assert.match(pb.mentorNotes, /do not invent slippage PF/i);
+  });
+
+  it("fixture pack fills SHORT once at next-open, SL terminal high, TP 1R", () => {
+    const pack = loadHermanFixture();
+    const sessions = sessionsFromTapePack(pack);
+    assert.equal(sessions.length, 4);
+    const ev = evaluatePlaybook(hermanBook(), 8, sessions, false, "pack");
+    assert.equal(ev.summary.source, "pack");
+    assert.equal(ev.summary.sessions, 4);
+    assert.equal(ev.summary.trades, 1);
+    assert.equal(canMarkValidated(ev.summary), true);
+    const t = ev.trades[0]!;
+    assert.equal(t.date, "2026-09-11");
+    assert.equal(t.side, "short");
+    assert.equal(t.entry, 24128);
+    assert.equal(t.stop, 24155);
+    assert.equal(t.target, 24101);
+    assert.equal(t.exit, 24101);
+    assert.equal(t.rMultiple, 1);
+    assert.match(t.notes, /NQ-ish commission/);
+    assert.doesNotMatch(t.notes, /75\.6/);
+  });
+
+  it("negative fixture days: no confirm, out of session, streak broken", () => {
+    const byDate = new Map(sessionsFromTapePack(loadHermanFixture()).map((s) => [s.date, s]));
+    for (const date of ["2026-09-10", "2026-09-09", "2026-09-08"]) {
+      const session = byDate.get(date);
+      assert.ok(session, date);
+      const ev = evaluatePlaybook(hermanBook(), 1, [session!], false, "pack");
+      assert.equal(ev.summary.trades, 0, date);
+    }
+  });
+
+  it("wicks through the terminal extreme do not confirm", () => {
+    const session = hermanSession([
+      ...HERMAN_BULLS,
+      barAt(9 * 60 + 50, 24148, 24150, 24120, 24140),
+      barAt(9 * 60 + 51, 24140, 24145, 24136, 24142),
+    ]);
+    const ev = evaluatePlaybook(hermanBook(), 1, [session], false, "pack");
+    assert.equal(ev.summary.trades, 0);
+  });
+
+  it("LONG: 5 bear bodies, close above terminal high, next-open 1R", () => {
+    const session = hermanSession([
+      barAt(9 * 60 + 45, 24150, 24152, 24138, 24140),
+      barAt(9 * 60 + 46, 24140, 24142, 24128, 24130),
+      barAt(9 * 60 + 47, 24130, 24132, 24118, 24120),
+      barAt(9 * 60 + 48, 24120, 24122, 24108, 24110),
+      barAt(9 * 60 + 49, 24110, 24115, 24090, 24100),
+      barAt(9 * 60 + 50, 24110, 24130, 24108, 24120),
+      barAt(9 * 60 + 51, 24122, 24160, 24118, 24150),
+    ]);
+    const ev = evaluatePlaybook(hermanBook(), 1, [session], false, "pack");
+    assert.equal(ev.summary.trades, 1);
+    const t = ev.trades[0]!;
+    assert.equal(t.side, "long");
+    assert.equal(t.entry, 24122);
+    assert.equal(t.stop, 24090);
+    assert.equal(t.target, 24154);
+    assert.equal(t.exit, 24154);
+  });
+
+  it("stop-first on the fill bar when next-open is through and both sides print", () => {
+    const session = hermanSession([
+      ...HERMAN_BULLS,
+      barAt(9 * 60 + 50, 24148, 24150, 24120, 24130),
+      barAt(9 * 60 + 51, 24128, 24160, 24090, 24105),
+    ]);
+    const ev = evaluatePlaybook(hermanBook(), 1, [session], false, "pack");
+    assert.equal(ev.summary.trades, 1);
+    const t = ev.trades[0]!;
+    assert.equal(t.side, "short");
+    assert.equal(t.entry, 24128);
+    assert.equal(t.exit, 24155);
+    assert.equal(t.stop, 24155);
+  });
+
+  it("hard-flats at the 16:00 ET open when SL/TP are not hit", () => {
+    const session = hermanSession([
+      ...HERMAN_BULLS,
+      barAt(9 * 60 + 50, 24148, 24150, 24120, 24130),
+      barAt(9 * 60 + 51, 24128, 24132, 24120, 24125),
+      barAt(16 * 60, 24120, 24122, 24118, 24119),
+    ]);
+    const ev = evaluatePlaybook(hermanBook(), 1, [session], false, "pack");
+    assert.equal(ev.summary.trades, 1);
+    const t = ev.trades[0]!;
+    assert.equal(t.exit, 24120);
+    assert.match(t.notes, /time/);
+  });
+
+  it("skips when next-open gaps through the structural stop", () => {
+    const session = hermanSession([
+      ...HERMAN_BULLS,
+      barAt(9 * 60 + 50, 24148, 24150, 24120, 24130),
+      barAt(9 * 60 + 51, 24160, 24162, 24150, 24155),
+    ]);
+    const ev = evaluatePlaybook(hermanBook(), 1, [session], false, "pack");
+    assert.equal(ev.summary.trades, 0);
+  });
+
+  it("model tape cannot validate the sleeve", () => {
+    const empty = evaluatePlaybook(hermanBook(), 8, [], false);
+    assert.equal(empty.summary.source, "empty");
+    assert.equal(canMarkValidated(empty.summary), false);
+    const model = evaluatePlaybook(hermanBook(), 3, undefined, true);
+    assert.equal(model.summary.source, "model");
+    assert.equal(canMarkValidated(model.summary), false);
   });
 });
 
